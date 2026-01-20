@@ -2,6 +2,7 @@ import os
 import json
 import time
 from fastapi import FastAPI, Request, Response, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List
 from twilio.twiml.messaging_response import MessagingResponse
@@ -15,9 +16,16 @@ from app.core.config import Settings
 # ==============================================================================
 # 1. INICIALIZAÇÃO E VARIÁVEIS DE AMBIENTE
 # ==============================================================================
-print("🚀 Inicializando aplicação no Azure App Service...")
 
 app = FastAPI(title="Bot Águas do Pará", version="1.0.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Em produção, colocar a URL específica do front
+    allow_credentials=True,
+    allow_methods=["*"],  # Permite GET, POST, OPTIONS, etc.
+    allow_headers=["*"],  # Permite todos os headers
+)
 
 # Instância global de Settings (Key Vault)
 settings = Settings()
@@ -99,7 +107,6 @@ def enviar_sequencia_background(mensagens, bot_number, sender_id):
 # ==============================================================================
 # 3. ROTAS DA APLICAÇÃO
 # ==============================================================================
-
 @app.get("/")
 def health_check():
     """Rota simples para o Azure verificar se o app está vivo (Ping)."""
@@ -121,7 +128,7 @@ async def chat_webhook(request: Request, background_tasks: BackgroundTasks):
         return Response(content=str(MessagingResponse()), media_type="application/xml")
     tipo = resposta.get('tipo')
     resp = MessagingResponse() # Fallback TwiML
-    # ESTRATÉGIA 1: Sequência (Manda para Background para não dar timeout)
+
     if client and tipo == 'sequencia':
         background_tasks.add_task(
             enviar_sequencia_background, 
@@ -130,7 +137,7 @@ async def chat_webhook(request: Request, background_tasks: BackgroundTasks):
             sender_id
         )
         return Response(content="", media_type="application/xml")
-    # ESTRATÉGIA 2: Envio Imediato via API (Templates ou Combos Rápidos)
+
     if client and tipo in ['combo_inicial', 'template']:
         try:
             num_envio = bot_number if bot_number else settings.get_secret("TWILIO_PHONE_NUMBER")
@@ -145,7 +152,7 @@ async def chat_webhook(request: Request, background_tasks: BackgroundTasks):
             return Response(content="", media_type="application/xml")
         except Exception as e:
             print(f"⚠️ Falha no envio imediato API: {e}. Tentando fallback...")
-    # ESTRATÉGIA 3: Resposta Síncrona TwiML (XML Clássico)
+
     if tipo == 'combo_inicial': resp.message(resposta['texto'])
     elif tipo == 'texto': resp.message(resposta['conteudo'])
     elif tipo == 'media':
