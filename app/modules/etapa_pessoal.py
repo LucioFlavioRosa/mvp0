@@ -1,8 +1,8 @@
 from app.modules.common import GeradorResposta
 from app.core.database import DatabaseManager
 import re
-import os
 import random
+from app.core.config import Settings
 
 class EtapaPessoal:
     def __init__(self):
@@ -51,8 +51,9 @@ class EtapaPessoal:
             return 'AGUARDANDO_CNPJ', {'tipo': 'texto', 'conteudo': "⚠️ Falha técnica ao salvar CNPJ. Tente novamente."}
 
         # 3. PREPARAÇÃO DA MENSAGEM
-        base_url = os.environ.get('APP_BASE_URL', '') 
-        url_video = "apresentacao.mp4" 
+        settings = Settings()
+        base_url = settings.get_secret('APP_BASE_URL') or ''
+        url_video = f"{base_url}/apresentacao.mp4" if base_url else "apresentacao.mp4"
 
         lista_mensagens = [
             {
