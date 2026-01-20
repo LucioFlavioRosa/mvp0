@@ -1,25 +1,21 @@
-import os
 import time
 import json
 import threading
 from twilio.rest import Client
+from app.core.config import Settings
 
 class TwilioService:
     def __init__(self):
-        # Carrega credenciais
-        self.account_sid = os.environ.get('TWILIO_ACCOUNT_SID')
-        self.auth_token = os.environ.get('TWILIO_AUTH_TOKEN')
+        settings = Settings()
+        self.account_sid = settings.get_secret('TWILIO_ACCOUNT_SID')
+        self.auth_token = settings.get_secret('TWILIO_AUTH_TOKEN')
         
-        # 🟢 CORREÇÃO AQUI: Tratamento do número de envio
-        raw_number = os.environ.get('TWILIO_PHONE_NUMBER', '')
-        
-        # Garante que o número de ORIGEM tenha o prefixo whatsapp:
+        raw_number = settings.get_secret('TWILIO_PHONE_NUMBER') or ''
         if raw_number and "whatsapp:" not in raw_number:
             self.phone_number = f"whatsapp:{raw_number}"
         else:
             self.phone_number = raw_number
         
-        # Inicializa cliente
         if self.account_sid and self.auth_token:
             self.client = Client(self.account_sid, self.auth_token)
         else:
@@ -29,7 +25,6 @@ class TwilioService:
     def enviar_resposta(self, to_number, resposta_bot):
         if not self.client: return
 
-        # Garante que o número de DESTINO tenha o prefixo whatsapp:
         if "whatsapp:" not in to_number:
             to_number = f"whatsapp:{to_number}"
         
@@ -62,7 +57,7 @@ class TwilioService:
                 if conteudo:
                     self.client.messages.create(
                         body=conteudo,
-                        from_=self.phone_number, # Agora garantido com whatsapp:
+                        from_=self.phone_number,
                         to=to_number
                     )
 
