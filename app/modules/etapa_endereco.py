@@ -2,16 +2,16 @@ from app.modules.common import GeradorResposta
 from app.core.database import DatabaseManager
 import requests
 import re
-import os
 import googlemaps # 🟢 Biblioteca oficial do Google Maps
+from app.core.config import Settings
 
 class EtapaEndereco:
     def __init__(self):
         self.db = DatabaseManager()
         
-        # 🟢 Configuração do Google Maps
-        # A chave deve estar carregada no os.environ (ver passo anterior do Colab)
-        api_key = os.environ.get('GOOGLE_MAPS_API_KEY')
+        # 🟢 Configuração do Google Maps via Azure Key Vault
+        settings = Settings()
+        api_key = settings.get_secret('GOOGLE_MAPS_API_KEY')
         
         if api_key:
             try:
@@ -21,7 +21,7 @@ class EtapaEndereco:
                 print(f"❌ Erro ao iniciar Google Maps: {e}")
                 self.gmaps = None
         else:
-            print("⚠️ AVISO: GOOGLE_MAPS_API_KEY não encontrada. Geolocalização não funcionará.")
+            print("⚠️ AVISO: GOOGLE_MAPS_API_KEY não encontrada no Key Vault. Geolocalização não funcionará.")
             self.gmaps = None
         
         # ID do Template que inicia a próxima etapa (Habilidades)
