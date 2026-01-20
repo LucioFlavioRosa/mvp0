@@ -1,202 +1,192 @@
-import uvicorn
-import nest_asyncio
-import json
 import os
+import json
 import time
-import importlib
-import sys
-import threading
-from google.colab import userdata
-
-# ==============================================================================
-# 0. VARIÁVEIS GLOBAIS
-# ==============================================================================
-BASE_URL = None
-
-# ==============================================================================
-# 1. CARREGAMENTO DE SEGREDOS
-# ==============================================================================
-print("🔑 Carregando segredos do sistema...")
-try:
-    os.environ["CONNECTION_STRING_AZURE_STORAGE"] = userdata.get('CONNECTION_STRING_AZURE_STORAGE') or ""
-    os.environ["TWILIO_ACCOUNT_SID"] = userdata.get('TWILIO_ACCOUNT_SID') or ""
-    os.environ["TWILIO_AUTH_TOKEN"] = userdata.get('TWILIO_AUTH_TOKEN') or ""
-    os.environ["GOOGLE_MAPS_API_KEY"] = userdata.get('GOOGLE_MAPS_API_KEY') or ""
-    NGROK_AUTH_TOKEN = userdata.get('NGROK_TOKEN')
-    print("✅ Segredos carregados.")
-except Exception as e:
-    print(f"❌ Erro ao ler segredos: {e}")
-
-# ==============================================================================
-# 2. IMPORTS E RELOAD
-# ==============================================================================
-import app.bot_engine
-import app.modules.onboarding
-# ... (seus outros imports de módulos aqui, pode manter os que você já tem)
-# Para economizar espaço, mantive os principais, mas certifique-se de que seus módulos estão aqui
-importlib.reload(app.bot_engine)
-
-from app.bot_engine import BotEngine
-from fastapi import FastAPI, Form, Request, Response, BackgroundTasks
-from fastapi.staticfiles import StaticFiles
+from fastapi import FastAPI, Request, Response, BackgroundTasks
+from pydantic import BaseModel
+from typing import List
 from twilio.twiml.messaging_response import MessagingResponse
 from twilio.rest import Client
-from pyngrok import ngrok
+
+# Imports da sua aplicação (Certifique-se que as pastas app/ existem)
+from app.bot_engine import BotEngine
+from app.services.dispatch_service import DispatchService 
 
 # ==============================================================================
-# 3. INICIALIZAÇÃO DO APP
+# 1. INICIALIZAÇÃO E VARIÁVEIS DE AMBIENTE
 # ==============================================================================
-app = FastAPI()
+print("🚀 Inicializando aplicação no Azure App Service...")
 
-os.makedirs("arquivos_publicos", exist_ok=True)
-app.mount("/publico", StaticFiles(directory="arquivos_publicos"), name="publico")
+app = FastAPI(title="Bot Águas do Pará", version="1.0.0")
 
-bot = BotEngine()
-
+# Instâncias dos Motores
 try:
-    sid = os.environ["TWILIO_ACCOUNT_SID"]
-    token = os.environ["TWILIO_AUTH_TOKEN"]
+    bot = BotEngine()
+    dispatch_service = DispatchService()
+    print("✅ Motores inicializados (BotEngine e DispatchService).")
+except Exception as e:
+    print(f"❌ Erro crítico ao iniciar motores: {e}")
+
+# Cliente Twilio
+try:
+    # No Azure, estas variáveis devem estar em "Environment Variables"
+    sid = os.environ.get("TWILIO_ACCOUNT_SID")
+    token = os.environ.get("TWILIO_AUTH_TOKEN")
+    
     if sid and token:
         client = Client(sid, token)
+        print("✅ Cliente Twilio autenticado.")
     else:
         client = None
-except:
+        print("⚠️ AVISO: Credenciais Twilio não encontradas no ambiente.")
+except Exception as e:
     client = None
+    print(f"❌ Erro ao iniciar Twilio: {e}")
+
+# Modelo de Dados para a API de Disparo
+class DispatchRequest(BaseModel):
+    pedido_uuid: str
+    parceiros: List[str]
 
 # ==============================================================================
-# 4. FUNÇÃO BACKGROUND (ATUALIZADA COM SUPORTE A TEMPLATES)
+# 2. FUNÇÃO DE BACKGROUND (GERENCIA FILA DE MENSAGENS)
 # ==============================================================================
 def enviar_sequencia_background(mensagens, bot_number, sender_id):
-    if not client: return
-    global BASE_URL 
+    """
+    Processa lista de mensagens com delay, sem travar a resposta HTTP.
+    Ideal para sequências longas ou envio de mídia pesada.
+    """
+    if not client: 
+        print("❌ Erro Background: Cliente Twilio offline.")
+        return
+    
+    # Se o número do bot não vier no request, tenta pegar do ambiente
+    numero_envio = bot_number if bot_number else os.environ.get("TWILIO_PHONE_NUMBER")
+    
     try:
         for item in mensagens:
-            # Respeita o delay configurado
-            time.sleep(item.get('delay', 2.0)) 
+            # 1. Respeita o Delay configurado
+            time.sleep(item.get('delay', 1.0)) 
             
-            # --- TIPO 1: TEXTO SIMPLES ---
-            if item['tipo'] == 'texto':
-                client.messages.create(body=item['conteudo'], from_=bot_number, to=f'whatsapp:{sender_id}')
+            # Argumentos padrão
+            msg_args = {
+                'to': f'whatsapp:{sender_id}', 
+                'from_': numero_envio
+            }
             
-            # --- TIPO 2: MÍDIA (FOTO/VÍDEO) ---
-            elif item['tipo'] == 'media':
-                url_final = item['url']
+            tipo = item.get('tipo')
+
+            # --- CASO A: TEXTO SIMPLES ---
+            if tipo == 'texto':
+                client.messages.create(body=item['conteudo'], **msg_args)
+            
+            # --- CASO B: MÍDIA (VÍDEO/FOTO) ---
+            # O Segredo: Passamos a URL pública do Blob direto para o Twilio.
+            elif tipo == 'media':
+                url_blob = item['url'] 
+                legenda = item.get('legenda', '')
                 
-                if not url_final.startswith('http'):
-                    if BASE_URL:
-                        # Limpeza para evitar links quebrados (publico/publico/...)
-                        arquivo_limpo = url_final.replace("publico/", "").lstrip('/')
-                        url_final = f"{BASE_URL}/publico/{arquivo_limpo}"
-                
-                print(f"🔗 Enviando Mídia: {url_final}") 
-                
+                # O Twilio vai baixar o vídeo dessa URL e entregar como arquivo
                 client.messages.create(
-                    body=item.get('legenda', ''), 
-                    media_url=[url_final], 
-                    from_=bot_number, 
-                    to=f'whatsapp:{sender_id}'
+                    body=legenda, 
+                    media_url=[url_blob], 
+                    **msg_args
                 )
 
-            # --- TIPO 3: TEMPLATE (BOTÕES) - NOVO! ---
-            elif item['tipo'] == 'template':
+            # --- CASO C: TEMPLATE (BOTÕES) ---
+            elif tipo == 'template':
                 client.messages.create(
                     content_sid=item['sid'],
                     content_variables=json.dumps(item.get('variaveis', {})),
-                    from_=bot_number,
-                    to=f'whatsapp:{sender_id}'
+                    **msg_args
                 )
 
     except Exception as e:
-        print(f"🔥 Erro Background: {e}")
-
+        print(f"🔥 Erro na tarefa de Background: {e}")
 
 # ==============================================================================
-# 5. WEBHOOK
+# 3. ROTAS DA APLICAÇÃO
 # ==============================================================================
+
+@app.get("/")
+def health_check():
+    """Rota simples para o Azure verificar se o app está vivo (Ping)."""
+    return {"status": "online", "environment": "Azure Production"}
+
 @app.post("/bot")
 async def chat_webhook(request: Request, background_tasks: BackgroundTasks):
+    """Webhook principal que recebe todas as mensagens do WhatsApp."""
+    
+    # 1. Parse do Formulário Twilio
     form_data = await request.form()
     message_body = form_data.get('Body', '').strip()
     sender_id = form_data.get('From', '').replace('whatsapp:', '')
-    bot_number = form_data.get('To', '')
-    media_url = form_data.get('MediaUrl0')
+    bot_number = form_data.get('To', '') 
+    media_url = form_data.get('MediaUrl0') # Se o usuário mandou foto
     
-    print(f"🤖 User: {message_body} | Mídia: {media_url}") # Log simplificado
+    print(f"📩 Msg recebida de {sender_id}: {message_body}")
 
-    resposta = bot.processar_mensagem(sender_id, message_body, media_url)
+    # 2. Processamento Lógico (BotEngine)
+    try:
+        resposta = bot.processar_mensagem(sender_id, message_body, media_url)
+    except Exception as e:
+        print(f"🔥 Erro no BotEngine: {e}")
+        return Response(content=str(MessagingResponse()), media_type="application/xml")
+
     tipo = resposta.get('tipo')
+    resp = MessagingResponse() # Fallback TwiML
 
-    resp = MessagingResponse()
+    # 3. Estratégias de Resposta
 
+    # ESTRATÉGIA 1: Sequência (Manda para Background para não dar timeout)
     if client and tipo == 'sequencia':
-        background_tasks.add_task(enviar_sequencia_background, resposta.get('mensagens', []), bot_number, sender_id)
+        background_tasks.add_task(
+            enviar_sequencia_background, 
+            resposta.get('mensagens', []), 
+            bot_number, 
+            sender_id
+        )
+        # Retorna 200 OK vazio para o Twilio não reclamar
         return Response(content="", media_type="application/xml")
     
+    # ESTRATÉGIA 2: Envio Imediato via API (Templates ou Combos Rápidos)
     if client and tipo in ['combo_inicial', 'template']:
         try:
+            num_envio = bot_number if bot_number else os.environ.get("TWILIO_PHONE_NUMBER")
+            
             if tipo == 'combo_inicial':
-                client.messages.create(body=resposta['texto'], from_=bot_number, to=f'whatsapp:{sender_id}')
-                time.sleep(1)
+                client.messages.create(body=resposta['texto'], from_=num_envio, to=f'whatsapp:{sender_id}')
+                time.sleep(0.5)
+            
+            # Envia o Template
             client.messages.create(
                 content_sid=resposta.get('template_sid') or resposta.get('sid'),
                 content_variables=json.dumps(resposta.get('variaveis', {})),
-                from_=bot_number, to=f'whatsapp:{sender_id}'
+                from_=num_envio, to=f'whatsapp:{sender_id}'
             )
             return Response(content="", media_type="application/xml")
-        except:
-            pass # Falha silenciosa cai no fallback abaixo
+        except Exception as e:
+            print(f"⚠️ Falha no envio imediato API: {e}. Tentando fallback...")
+            # Se falhar a API, deixa cair no XML abaixo
 
-    # Fallback
+    # ESTRATÉGIA 3: Resposta Síncrona TwiML (XML Clássico)
+    # Útil para respostas de texto simples muito rápidas
     if tipo == 'combo_inicial': resp.message(resposta['texto'])
     elif tipo == 'texto': resp.message(resposta['conteudo'])
     elif tipo == 'media':
         msg = resp.message(resposta.get('legenda', ''))
-        url_media = resposta['url']
-        if not url_media.startswith('http') and BASE_URL:
-             url_media = f"{BASE_URL}/publico/{url_media.lstrip('/')}"
-        msg.media(url_media)
+        msg.media(resposta['url']) # URL Pública do Blob
 
     return Response(content=str(resp), media_type="application/xml")
 
-# ==============================================================================
-# 6. EXECUÇÃO DO SERVIDOR (COM LOOP INFINITO)
-# ==============================================================================
-def run_server():
-    # Roda o servidor Uvicorn
-    # log_level="info" ajuda a ver os erros se houver
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
-
-if __name__ == "__main__":
-    if NGROK_AUTH_TOKEN:
-        ngrok.set_auth_token(NGROK_AUTH_TOKEN)
-    
-    # Limpa processos antigos
-    os.system("killall ngrok")
+@app.post("/api/dispatch")
+async def dispatch_order(data: DispatchRequest):
+    """API Interna/Front-end para disparar ofertas para parceiros."""
+    print(f"🚀 API Dispatch: Pedido {data.pedido_uuid} -> {len(data.parceiros)} parceiros.")
     
     try:
-        # 1. Abre o túnel
-        tunnel = ngrok.connect(8000)
-        public_url = tunnel.public_url
-        
-        # Atualiza URL Global
-        BASE_URL = public_url
-        
-        print("="*60)
-        print(f"🚀 BOT ONLINE: {public_url}/bot")
-        print(f"🎥 Teste vídeo: {public_url}/publico/apresentacao.mp4")
-        print("👉 Cole a URL no Twilio e mande 'oi' no WhatsApp.")
-        print("="*60)
-        print("⏳ O servidor está rodando. NÃO PARE ESTA CÉLULA.")
-        
-        # 2. Inicia o servidor em uma Thread separada
-        thread = threading.Thread(target=run_server)
-        thread.start()
-        
-        # 3. MANTÉM A CÉLULA VIVA (O Segredo está aqui 👇)
-        while True:
-            time.sleep(5) # Espera 5 segundos e repete para sempre
-            
-    except KeyboardInterrupt:
-        print("\n🛑 Servidor parado pelo usuário.")
+        # Chama o serviço de disparo
+        result = dispatch_service.enviar_oferta_para_prestadores(data.parceiros, data.pedido_uuid)
+        return result
     except Exception as e:
-        print(f"❌ Erro fatal: {e}")
+        print(f"🔥 Erro API Dispatch: {e}")
+        return {"status": "error", "message": str(e)}
