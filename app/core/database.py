@@ -1,21 +1,22 @@
 import pyodbc
 import time
 import random
-from google.colab import userdata
+from app.core.config import Settings
 
 class DatabaseManager:
     def __init__(self):
         try:
+            settings = Settings()
             self.conn_str = (
                 f"DRIVER={{ODBC Driver 18 for SQL Server}};"
-                f"SERVER={userdata.get('DB_SERVER')};"
-                f"DATABASE={userdata.get('DB_NAME')};"
-                f"UID={userdata.get('DB_USER')};"
-                f"PWD={userdata.get('DB_PASSWORD')};"
+                f"SERVER={settings.get_secret('DB_SERVER')};"
+                f"DATABASE={settings.get_secret('DB_NAME')};"
+                f"UID={settings.get_secret('DB_USER')};"
+                f"PWD={settings.get_secret('DB_PASSWORD')};"
                 "Encrypt=yes;TrustServerCertificate=no;Connection Timeout=60;LoginTimeout=60;"
             )
-        except:
-            print("⚠️ AVISO: Secrets do Banco não configurados corretamente.")
+        except Exception as e:
+            print(f"⚠️ AVISO: Falha ao configurar secrets do Banco: {e}")
             self.conn_str = ""
 
     def _get_connection(self):
