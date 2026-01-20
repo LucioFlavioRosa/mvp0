@@ -1,7 +1,6 @@
 import json
 import traceback
 from app.core.database import DatabaseManager
-from app.modules.common import GeradorResposta
 from app.modules.onboarding import ModuloOnboarding
 from app.modules.etapa_pessoal import EtapaPessoal
 from app.modules.etapa_endereco import EtapaEndereco
@@ -9,6 +8,8 @@ from app.modules.etapa_habilidades import EtapaHabilidades
 from app.modules.etapa_veiculos import EtapaVeiculos
 from app.modules.etapa_disponibilidade import EtapaDisponibilidade
 from app.modules.etapa_documentos import EtapaDocumentos 
+# 🟢 1. IMPORTAÇÃO DO NOVO MÓDULO
+from app.modules.etapa_oferta import EtapaOferta
 
 class BotEngine:
     def __init__(self):
@@ -22,6 +23,8 @@ class BotEngine:
         self.veiculos = EtapaVeiculos()
         self.disponibilidade = EtapaDisponibilidade()
         self.documentos = EtapaDocumentos()
+        # 🟢 2. INICIALIZAÇÃO DA OFERTA
+        self.oferta = EtapaOferta()
         
         # MAPA DE RETOMADA (Fallback para texto simples)
         self.MAPA_RETOMADA = {
@@ -94,8 +97,32 @@ class BotEngine:
     def processar_mensagem(self, sender_id, mensagem_texto, media_url=None):
         try:
             clean_id = sender_id.split('_')[0]
-            step_atual, dados = self._get_session(clean_id)
             texto_clean = mensagem_texto.strip().upper() if mensagem_texto else ""
+            
+            # ==================================================================
+            # 🟢 3. INTERCEPTAÇÃO PRIORITÁRIA (OFERTA DE SERVIÇO)
+            # ==================================================================
+            # Antes de olhar o cadastro, verificamos se existe um disparo 'ENVIADO'
+            # para este usuário na tabela PEDIDOS_DISPAROS via EtapaOferta.
+            
+            dados_oferta = self.oferta.verificar_oferta_pendente(clean_id)
+            
+            if dados_oferta:
+                # Se encontrou oferta pendente, o Bot IGNORA o estado do cadastro
+                # e processa a resposta como Sim/Não para a oferta.
+                print(f"⚡ Interceptando fluxo para Oferta Pendente: {dados_oferta}")
+                
+                # step_dummy é ignorado pois o controle é via tabela PEDIDOS_DISPAROS
+                step_dummy, resposta = self.oferta.processar_resposta(mensagem_texto, dados_oferta, clean_id)
+                
+                # Não salvamos sessão no CHAT_SESSIONS pois o estado é controlado na PEDIDOS_DISPAROS
+                return resposta
+
+            # ==================================================================
+            # FLUXO NORMAL (CADASTRO)
+            # ==================================================================
+
+            step_atual, dados = self._get_session(clean_id)
             novo_step = step_atual
             resposta = {}
 
@@ -121,7 +148,7 @@ class BotEngine:
                 else: sinal = retorno; resp_obj = {}
 
                 # ==========================================================
-                # 🟢 LÓGICA CENTRAL DE RETOMADA INTELIGENTE
+                # LÓGICA CENTRAL DE RETOMADA INTELIGENTE
                 # ==========================================================
                 if sinal == 'RETOMAR_FLUXO':
                     step_backup = dados.get('step_backup', 'AGUARDANDO_CNPJ')
@@ -209,8 +236,6 @@ class BotEngine:
             
             # --- HABILIDADES ---
             elif step_atual == 'INICIAR_HABILIDADES': novo_step, resposta = self.habilidades.iniciar_modulo(clean_id)
-            
-            # 🔴 CORREÇÃO: Chamada direta e simples, sem validação complexa
             elif step_atual.startswith('AGUARDANDO_HABILIDADE_'):
                 novo_step, resposta = self.habilidades.processar_resposta(step_atual, mensagem_texto, clean_id)
 
