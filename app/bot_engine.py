@@ -8,7 +8,6 @@ from app.modules.etapa_habilidades import EtapaHabilidades
 from app.modules.etapa_veiculos import EtapaVeiculos
 from app.modules.etapa_disponibilidade import EtapaDisponibilidade
 from app.modules.etapa_documentos import EtapaDocumentos 
-# 🟢 1. IMPORTAÇÃO DO NOVO MÓDULO
 from app.modules.etapa_oferta import EtapaOferta
 
 class BotEngine:
@@ -23,7 +22,6 @@ class BotEngine:
         self.veiculos = EtapaVeiculos()
         self.disponibilidade = EtapaDisponibilidade()
         self.documentos = EtapaDocumentos()
-        # 🟢 2. INICIALIZAÇÃO DA OFERTA
         self.oferta = EtapaOferta()
         
         # MAPA DE RETOMADA (Fallback para texto simples)
@@ -99,9 +97,6 @@ class BotEngine:
             clean_id = sender_id.split('_')[0]
             texto_clean = mensagem_texto.strip().upper() if mensagem_texto else ""
             
-            # ==================================================================
-            # 🟢 3. INTERCEPTAÇÃO PRIORITÁRIA (OFERTA DE SERVIÇO)
-            # ==================================================================
             # Antes de olhar o cadastro, verificamos se existe um disparo 'ENVIADO'
             # para este usuário na tabela PEDIDOS_DISPAROS via EtapaOferta.
             
@@ -269,4 +264,5 @@ class BotEngine:
         except Exception as e:
             print(f"🔥 ERRO NO BOT: {e}")
             traceback.print_exc()
+
             return {'tipo': 'texto', 'conteudo': "⚠️ Ocorreu um erro interno. Tente novamente."}
