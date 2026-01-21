@@ -52,8 +52,7 @@ class EtapaPessoal:
 
         # 3. PREPARAÇÃO DA MENSAGEM
         settings = Settings()
-        base_url = settings.get_secret('APP_BASE_URL') or ''
-        url_video = f"{base_url}/apresentacao.mp4" if base_url else "apresentacao.mp4"
+        url_video = settings.get_secret('VIDEO-URL')
 
         lista_mensagens = [
             {
@@ -153,5 +152,6 @@ class EtapaPessoal:
         
         if not sucesso:
              return 'AGUARDANDO_NOME', {'tipo': 'texto', 'conteudo': "⚠️ Erro ao salvar Nome. Tente novamente."}
+
 
         return 'AGUARDANDO_CEP', {'tipo': 'texto', 'conteudo': "📝 Dados pessoais salvos!\n\nAgora vamos para o endereço. Digite seu *CEP*:"}
