@@ -40,9 +40,9 @@ except Exception as e:
 
 # Cliente Twilio
 try:
-    sid = settings.get_secret("TWILIO_ACCOUNT_SID")
-    token = settings.get_secret("TWILIO_AUTH_TOKEN")
-    raw_number = settings.get_secret("TWILIO_PHONE_NUMBER") or ''
+    sid = settings.get_secret("TWILIO-ACCOUNT-SID")
+    token = settings.get_secret("TWILIO-AUTH-TOKEN")
+    raw_number = settings.get_secret("TWILIO-PHONE-NUMBER") or ''
     if raw_number and "whatsapp:" not in raw_number:
         phone_number = f"whatsapp:{raw_number}"
     else:
