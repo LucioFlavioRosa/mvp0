@@ -7,8 +7,7 @@ from app.core.config import Settings
 class EtapaPessoal:
     def __init__(self):
         self.db = DatabaseManager()
-
-    # 🟢 Método de Retomada Inteligente
+        
     def reenviar_etapa_atual(self, step_atual):
         if step_atual == 'AGUARDANDO_CNPJ':
             return step_atual, {
@@ -24,6 +23,12 @@ class EtapaPessoal:
             return step_atual, {
                 'tipo': 'texto',
                 'conteudo': "🔄 Retomando.\n\nPor favor, digite seu *Nome Completo*:"
+            }
+        # 👇 NOVO: Retomada do Email
+        elif step_atual == 'AGUARDANDO_EMAIL':
+             return step_atual, {
+                'tipo': 'texto',
+                'conteudo': "🔄 Vamos continuar.\n\nPor favor, digite seu *E-mail* para contato:"
             }
         return None
 
@@ -142,7 +147,7 @@ class EtapaPessoal:
         if len(nome) < 3:
             return 'AGUARDANDO_NOME', {'tipo': 'texto', 'conteudo': "Nome muito curto. Digite seu nome completo:"}
             
-        # 🟢 2. Validação de Nome Composto (Pelo menos 2 palavras)
+        # 2. Validação de Nome Composto (Pelo menos 2 palavras)
         partes_nome = nome.split() # Divide pelos espaços
         if len(partes_nome) < 2:
             return 'AGUARDANDO_NOME', {'tipo': 'texto', 'conteudo': "⚠️ Por favor, digite seu **Nome Completo** (Nome e Sobrenome). Tente novamente:"}
@@ -153,5 +158,23 @@ class EtapaPessoal:
         if not sucesso:
              return 'AGUARDANDO_NOME', {'tipo': 'texto', 'conteudo': "⚠️ Erro ao salvar Nome. Tente novamente."}
 
+        # 👇 ALTERADO: Agora vai para o passo de Email, não direto para o CEP
+        return 'AGUARDANDO_EMAIL', {'tipo': 'texto', 'conteudo': "📝 Nome salvo!\n\nAgora, por favor, digite seu *E-mail* para contato:"}
 
-        return 'AGUARDANDO_CEP', {'tipo': 'texto', 'conteudo': "📝 Dados pessoais salvos!\n\nAgora vamos para o endereço. Digite seu *CEP*:"}
+    # 👇 NOVO MÉTODO PARA PROCESSAR E-MAIL
+    def processar_email(self, texto, sender_id):
+        email = texto.strip().lower()
+
+        # 1. Validação simples de Regex para Email
+        regex_email = r'^[\w\.-]+@[\w\.-]+\.\w+$'
+        if not re.match(regex_email, email):
+             return 'AGUARDANDO_EMAIL', {'tipo': 'texto', 'conteudo': "❌ *E-mail inválido!*\n\nPor favor, digite um endereço de e-mail válido (ex: nome@gmail.com):"}
+
+        # 2. Salva no banco
+        sucesso = self.db.execute_write("UPDATE PARCEIROS_PERFIL SET Email=? WHERE WhatsAppID=?", (email, sender_id))
+
+        if not sucesso:
+             return 'AGUARDANDO_EMAIL', {'tipo': 'texto', 'conteudo': "⚠️ Erro técnico ao salvar o E-mail. Tente novamente."}
+
+        # 3. Sucesso -> Vai para o CEP
+        return 'AGUARDANDO_CEP', {'tipo': 'texto', 'conteudo': "📧 E-mail cadastrado!\n\nAgora vamos para o endereço. Digite seu *CEP*:"}
