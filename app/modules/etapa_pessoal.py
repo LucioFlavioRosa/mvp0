@@ -69,7 +69,7 @@ class EtapaPessoal:
                 'tipo': 'media',
                 'url': url_video,
                 'legenda': "",
-                'delay': 2 
+                'delay': 1 
             }
         ]
 
@@ -94,7 +94,7 @@ class EtapaPessoal:
             lista_mensagens.append({
                 'tipo': 'texto',
                 'conteudo': "❌ *Cadastro Não Aprovado*\n\nInfelizmente identificamos pendências cadastrais.\nAgradecemos seu interesse.",
-                'delay': 5
+                'delay': 30
             })
             return 'FINALIZADO', {'tipo': 'sequencia', 'mensagens': lista_mensagens}
 
@@ -178,3 +178,4 @@ class EtapaPessoal:
 
         # 3. Sucesso -> Vai para o CEP
         return 'AGUARDANDO_CEP', {'tipo': 'texto', 'conteudo': "📧 E-mail cadastrado!\n\nAgora vamos para o endereço. Digite seu *CEP*:"}
+
