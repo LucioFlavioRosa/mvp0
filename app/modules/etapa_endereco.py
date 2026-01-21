@@ -2,16 +2,14 @@ from app.modules.common import GeradorResposta
 from app.core.database import DatabaseManager
 import requests
 import re
-import googlemaps # 🟢 Biblioteca oficial do Google Maps
+import googlemaps
 from app.core.config import Settings
 
 class EtapaEndereco:
     def __init__(self):
         self.db = DatabaseManager()
-        
-        # 🟢 Configuração do Google Maps via Azure Key Vault
         settings = Settings()
-        api_key = settings.get_secret('GOOGLE_MAPS_API_KEY')
+        api_key = settings.get_secret('GOOGLE-MAPS-API-KEY')
         
         if api_key:
             try:
@@ -186,4 +184,5 @@ class EtapaEndereco:
                     'delay': 1
                 }
             ]
+
         }
