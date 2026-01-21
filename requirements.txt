@@ -1,0 +1,10 @@
+fastapi>=0.104.0
+uvicorn[standard]>=0.23.0
+pyodbc>=4.0.35
+twilio>=8.0.0
+azure-storage-blob>=12.19.0
+azure-identity>=1.13.0
+azure-keyvault-secrets>=4.7.0
+googlemaps>=4.10.0
+requests>=2.31.0
+pydantic>=2.5.2
