@@ -86,7 +86,7 @@ class EtapaEndereco:
 
         # 4. Salva no banco (Atualiza o que veio da API)
         sql = "UPDATE PARCEIROS_PERFIL SET CEP=?, Cidade=?, Bairro=?, Rua=? WHERE WhatsAppID=?"
-        self.db.execute_write(sql, (cep_limpo, f"{cidade}-{uf}", bairro_api, rua_api, sender_id))
+        self.db.execute_write(sql, (cep_limpo, cidade, bairro_api, rua_api, sender_id))
 
         # 5. Lógica da Sequência: CEP -> BAIRRO
         msg = f"📍 Cidade localizada: {cidade}-{uf}."
@@ -186,3 +186,4 @@ class EtapaEndereco:
             ]
 
         }
+
