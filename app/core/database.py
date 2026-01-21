@@ -9,10 +9,10 @@ class DatabaseManager:
             settings = Settings()
             self.conn_str = (
                 f"DRIVER={{ODBC Driver 18 for SQL Server}};"
-                f"SERVER={settings.get_secret('DB_SERVER')};"
-                f"DATABASE={settings.get_secret('DB_NAME')};"
-                f"UID={settings.get_secret('DB_USER')};"
-                f"PWD={settings.get_secret('DB_PASSWORD')};"
+                f"SERVER={settings.get_secret('DB-SERVER')};"
+                f"DATABASE={settings.get_secret('DB-NAME')};"
+                f"UID={settings.get_secret('DB-USER')};"
+                f"PWD={settings.get_secret('DB-PASSWORD')};"
                 "Encrypt=yes;TrustServerCertificate=no;Connection Timeout=60;LoginTimeout=60;"
             )
         except Exception as e:
