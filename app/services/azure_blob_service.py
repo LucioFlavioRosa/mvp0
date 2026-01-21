@@ -5,9 +5,9 @@ from app.core.config import Settings
 class AzureBlobService:
     def __init__(self):
         settings = Settings()
-        self.azure_connection_string = settings.get_secret("CONNECTION_STRING_AZURE_STORAGE")
-        self.twilio_sid = settings.get_secret("TWILIO_ACCOUNT_SID")
-        self.twilio_token = settings.get_secret("TWILIO_AUTH_TOKEN")
+        self.azure_connection_string = settings.get_secret("CONNECTION-STRING-AZURE-STORAGE")
+        self.twilio_sid = settings.get_secret("TWILIO-ACCOUNT-SID")
+        self.twilio_token = settings.get_secret("TWILIO-AUTH-TOKEN")
 
         if not all([self.azure_connection_string, self.twilio_sid, self.twilio_token]):
             print("⚠️ [AzureBlobService] AVISO: Variáveis de ambiente não encontradas!")
