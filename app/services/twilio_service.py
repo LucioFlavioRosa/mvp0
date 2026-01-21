@@ -7,10 +7,10 @@ from app.core.config import Settings
 class TwilioService:
     def __init__(self):
         settings = Settings()
-        self.account_sid = settings.get_secret('TWILIO_ACCOUNT_SID')
-        self.auth_token = settings.get_secret('TWILIO_AUTH_TOKEN')
+        self.account_sid = settings.get_secret('TWILIO-ACCOUNT-SID')
+        self.auth_token = settings.get_secret('TWILIO-AUTH-TOKEN')
         
-        raw_number = settings.get_secret('TWILIO_PHONE_NUMBER') or ''
+        raw_number = settings.get_secret('TWILIO-PHONE-NUMBER') or ''
         if raw_number and "whatsapp:" not in raw_number:
             self.phone_number = f"whatsapp:{raw_number}"
         else:
