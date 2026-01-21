@@ -29,6 +29,7 @@ class BotEngine:
             'AGUARDANDO_CNPJ': "✅ Ótimo! Para iniciar, digite o número do seu *CNPJ* (apenas números):",
             'AGUARDANDO_CPF': "✅ CNPJ Validado! Digite o seu *CPF*:",
             'AGUARDANDO_NOME': "✅ Perfeito. Agora digite seu *Nome Completo*:",
+            'AGUARDANDO_EMAIL': "✅ Certo. Digite seu *E-mail* para contato:",
             'AGUARDANDO_CEP': "📝 Vamos para o endereço. Digite seu *CEP*:",
             'AGUARDANDO_BAIRRO': "Retomando: Qual é o seu *Bairro*?",
             'AGUARDANDO_RUA': "Retomando: Qual é o nome da *Rua*?",
@@ -98,19 +99,11 @@ class BotEngine:
             texto_clean = mensagem_texto.strip().upper() if mensagem_texto else ""
             
             # Antes de olhar o cadastro, verificamos se existe um disparo 'ENVIADO'
-            # para este usuário na tabela PEDIDOS_DISPAROS via EtapaOferta.
-            
             dados_oferta = self.oferta.verificar_oferta_pendente(clean_id)
             
             if dados_oferta:
-                # Se encontrou oferta pendente, o Bot IGNORA o estado do cadastro
-                # e processa a resposta como Sim/Não para a oferta.
                 print(f"⚡ Interceptando fluxo para Oferta Pendente: {dados_oferta}")
-                
-                # step_dummy é ignorado pois o controle é via tabela PEDIDOS_DISPAROS
                 step_dummy, resposta = self.oferta.processar_resposta(mensagem_texto, dados_oferta, clean_id)
-                
-                # Não salvamos sessão no CHAT_SESSIONS pois o estado é controlado na PEDIDOS_DISPAROS
                 return resposta
 
             # ==================================================================
@@ -180,8 +173,8 @@ class BotEngine:
                             msg = self.MAPA_RETOMADA.get(step_backup, "Vamos retomar.")
                             novo_step, resposta = step_backup, {'tipo': 'texto', 'conteudo': msg}
 
-                    # 4. DADOS PESSOAIS
-                    elif step_backup in ['AGUARDANDO_CNPJ', 'AGUARDANDO_CPF', 'AGUARDANDO_NOME']:
+                    # 4. DADOS PESSOAIS (ATUALIZADO COM EMAIL) 👇
+                    elif step_backup in ['AGUARDANDO_CNPJ', 'AGUARDANDO_CPF', 'AGUARDANDO_NOME', 'AGUARDANDO_EMAIL']:
                         print(f"DEBUG: Retomando Pessoal: {step_backup}")
                         res_pessoal = self.pessoal.reenviar_etapa_atual(step_backup)
                         if res_pessoal:
@@ -221,6 +214,7 @@ class BotEngine:
             elif step_atual == 'AGUARDANDO_CNPJ': novo_step, resposta = self.pessoal.processar_cnpj(mensagem_texto, clean_id)
             elif step_atual == 'AGUARDANDO_CPF': novo_step, resposta = self.pessoal.processar_cpf(mensagem_texto, clean_id)
             elif step_atual == 'AGUARDANDO_NOME': novo_step, resposta = self.pessoal.processar_nome(mensagem_texto, clean_id)
+            elif step_atual == 'AGUARDANDO_EMAIL': novo_step, resposta = self.pessoal.processar_email(mensagem_texto, clean_id)
             
             # --- ENDEREÇO ---
             elif step_atual == 'AGUARDANDO_CEP': novo_step, resposta = self.endereco.processar_cep(mensagem_texto, clean_id)
