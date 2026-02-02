@@ -188,7 +188,6 @@ A tabela abaixo mapeia os dados críticos identificados no ER Diagram e sua estr
 | **Parceiros** | CPF / Email / Tel | **PII (LGPD)** | Acesso restrito via RBAC na aplicação. Mascaramento em logs de aplicação. |
 | **Parceiros** | Selfie / CNH | **Biometria** | Armazenamento em Blob "Hot" Privado no Azure Storage. Acesso apenas via aplicação (Backend Proxy com SAS Token). |
 | **Parceiros** | Chave Pix | **Financeiro** | Criptografia a nível de coluna (Always Encrypted) ou restrição severa de visualização via API. |
-| **Geografia** | Lat/Long | **Rastreabilidade**| Dados de localização em tempo real são descartados após a conclusão da Ordem de Serviço (Princípio: *Privacy by Design*). |
 | **Chat** | Mensagens | **Comunicação** | Retenção definida (ex: 5 anos para fins legais), após isso, expurgo automático (Data Retention Policy). |
 
 ---
