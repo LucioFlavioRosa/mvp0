@@ -14,7 +14,7 @@ from app.services.dispatch_service import DispatchService
 from app.core.config import Settings
 
 # ==============================================================================
-# 1. INICIALIZAÇÃO E VARIÁVEIS DE AMBIENTE
+# 1. INICIALIZAÇÃO E VARIÁVEIS DE AMBIENTE - DEV
 # ==============================================================================
 
 app = FastAPI(title="Bot Águas do Pará", version="1.0.0")
