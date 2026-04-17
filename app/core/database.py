@@ -10,7 +10,7 @@ class DatabaseManager:
             self.conn_str = (
                 f"DRIVER={{ODBC Driver 18 for SQL Server}};"
                 f"SERVER={settings.get_secret('DB-SERVER')};"
-                f"DATABASE={settings.get_secret('DB-NAME')};"
+                f"DATABASE={settings.get_secret('DB-NAME-NOVA-APLICACAO')};"
                 f"UID={settings.get_secret('DB-USER')};"
                 f"PWD={settings.get_secret('DB-PASSWORD')};"
                 "Encrypt=yes;TrustServerCertificate=no;Connection Timeout=60;LoginTimeout=60;"
