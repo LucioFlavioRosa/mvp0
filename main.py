@@ -1,3 +1,5 @@
+from app.services.parceiro_service import ParceiroService
+from app.services.twilio_service import TwilioService
 import os
 import json
 import time
@@ -34,7 +36,9 @@ settings = Settings()
 try:
     bot = BotEngine()
     dispatch_service = DispatchService()
-    print("✅ Motores inicializados (BotEngine e DispatchService).")
+    parceiro_service = ParceiroService()
+    twilio_service = TwilioService()
+    print("✅ Motores inicializados (BotEngine, DispatchService, ParceiroService, TwilioService).")
 except Exception as e:
     print(f"❌ Erro crítico ao iniciar motores: {e}")
 
@@ -61,6 +65,10 @@ except Exception as e:
 class DispatchRequest(BaseModel):
     pedido_uuid: str
     parceiros: List[str]
+
+class SendMessageRequest(BaseModel):
+    parceiro_uuid: str
+    mensagem: str
 
 # ==============================================================================
 # 2. FUNÇÃO DE BACKGROUND (GERENCIA FILA DE MENSAGENS)
@@ -168,4 +176,20 @@ async def dispatch_order(data: DispatchRequest):
         return result
     except Exception as e:
         print(f"🔥 Erro API Dispatch: {e}")
+        return {"status": "error", "message": str(e)}
+
+@app.post("/api/send-message")
+async def sendMessage(data: SendMessageRequest):
+    try:
+        whatsapp_id = parceiro_service.getWhatsappID(data.parceiro_uuid)
+        if not whatsapp_id:
+            return {"status": "error", "message": "Parceiro não encontrado ou sem WhatsApp cadastrado."}
+        
+        # O serviço espera um dicionário com 'tipo' e 'conteudo'
+        msg_obj = {"tipo": "texto", "conteudo": data.mensagem}
+        twilio_service._enviar_unico(whatsapp_id, msg_obj)
+        
+        return {"status": "success", "message": "Mensagem enviada com sucesso."}
+    except Exception as e:
+        print(f"🔥 Erro API SendMessage: {e}")
         return {"status": "error", "message": str(e)}

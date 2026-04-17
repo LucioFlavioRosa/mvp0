@@ -9,6 +9,14 @@ class ParceiroService:
 
     # --- DADOS PESSOAIS ---
 
+    def getWhatsappID(self, parceiro_uuid):
+        sql = "SELECT WhatsAppID FROM PARCEIROS_PERFIL WHERE ParceiroUUID = ?"
+        row_user = self.db.execute_read_one(sql, (parceiro_uuid,))
+        if row_user:
+            return row_user[0]
+        else:
+            return None
+
     def salvar_cnpj_inicial(self, whatsapp_id, cnpj_limpo):
         """
         Primeiro passo de dados: Cria ou Atualiza o registro inicial.

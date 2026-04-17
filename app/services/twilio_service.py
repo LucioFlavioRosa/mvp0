@@ -50,6 +50,13 @@ class TwilioService:
 
     def _enviar_unico(self, to_number, msg):
         try:
+            if not to_number:
+                print("⚠️ TwilioService: to_number é nulo.")
+                return
+
+            if "whatsapp:" not in str(to_number):
+                to_number = f"whatsapp:{to_number}"
+
             tipo = msg.get('tipo')
             
             if tipo == 'texto' or tipo == 'combo_inicial':
