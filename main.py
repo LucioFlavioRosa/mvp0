@@ -17,7 +17,7 @@ from app.core.config import Settings
 # 1. INICIALIZAÇÃO E VARIÁVEIS DE AMBIENTE - DEV
 # ==============================================================================
 
-app = FastAPI(title="Bot Águas do Pará", version="1.0.0")
+app = FastAPI(title="Bot Águas do Pará", version="1.0.0") # Teste
 
 app.add_middleware(
     CORSMiddleware,
