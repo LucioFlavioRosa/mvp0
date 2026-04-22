@@ -14,6 +14,8 @@ from twilio.rest import Client
 from app.bot_engine import BotEngine
 from app.services.dispatch_service import DispatchService 
 from app.core.config import Settings
+from app.core.auth import get_bff_token
+from fastapi import Depends
 
 # ==============================================================================
 # 1. INICIALIZAÇÃO E VARIÁVEIS DE AMBIENTE - DEV
@@ -111,6 +113,19 @@ def enviar_sequencia_background(mensagens, bot_number, sender_id):
                 )
     except Exception as e:
         print(f"🔥 Erro na tarefa de Background: {e}")
+
+# ==============================================================================
+# 2.5 ROTAS PROTEGIDAS (API V1) - BFF INTEGRATION
+# ==============================================================================
+
+@app.get("/api/v1/health", dependencies=[Depends(get_bff_token)])
+async def protected_health_check():
+    """Rota protegida para validar a comunicação segura entre BFF e Backend."""
+    return {
+        "status": "secure_online",
+        "message": "Conexão com Backend validada via token de serviço.",
+        "environment": "Azure Production"
+    }
 
 # ==============================================================================
 # 3. ROTAS DA APLICAÇÃO

@@ -23,29 +23,54 @@ class Settings:
         self._secrets_cache = {}
         self._cache_lock = Lock()
         self.keyvault_url = os.environ.get('AZURE_KEYVAULT_URL')
+        
         if not self.keyvault_url:
-            raise RuntimeError("AZURE_KEYVAULT_URL não definida no ambiente.")
+            print("[INFO] AZURE_KEYVAULT_URL nao detectada. O sistema funcionara apenas com variaveis de ambiente (OS).")
+            self.client = None
+            return
+
         try:
             self.credential = DefaultAzureCredential()
             self.client = SecretClient(vault_url=self.keyvault_url, credential=self.credential)
+            print(f"[OK] Conectado ao Key Vault: {self.keyvault_url}")
         except Exception as e:
-            raise RuntimeError(f"Erro ao inicializar acesso ao Key Vault: {e}")
+            print(f"[AVISO] Falha ao inicializar Key Vault: {e}. O sistema usara fallback para variaveis de ambiente.")
+            self.client = None
 
-    def get_secret(self, secret_name):
+    def get_secret(self, secret_name: str):
         """
-        Busca o secret no cache local, se não existir busca no Key Vault.
+        Busca o secret na seguinte ordem:
+        1. Variáveis de ambiente (ex: App Service)
+        2. Cache local (evita chamadas repetidas)
+        3. Azure Key Vault
         """
+        # 1. Tenta Variável de Ambiente (Normalizada: hifen vira underline)
+        env_name = secret_name.replace("-", "_").upper()
+        env_value = os.environ.get(env_name) or os.environ.get(secret_name)
+        if env_value:
+            return env_value
+
+        # 2. Busca no cache local
         with self._cache_lock:
             if secret_name in self._secrets_cache:
                 return self._secrets_cache[secret_name]
+
+        # 3. Busca no Key Vault
         try:
+            # Se não houver URL do Key Vault, apenas retornamos None ou erro
+            if not self.keyvault_url:
+                return None
+
             secret = self.client.get_secret(secret_name)
             value = secret.value
             with self._cache_lock:
                 self._secrets_cache[secret_name] = value
             return value
         except Exception as e:
-            raise RuntimeError(f"Erro ao buscar secret '{secret_name}' no Key Vault: {e}")
+            # Se o secret não existir no ambiente nem no KV, logamos o aviso
+            # mas permitimos o fluxo continuar para variáveis não críticas
+            print(f"[AVISO] Secret '{secret_name}' nao encontrado no ambiente nem no KV: {e}")
+            return None
 
     def get_all_secrets(self, secret_names):
         """

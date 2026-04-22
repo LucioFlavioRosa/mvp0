@@ -1,76 +1,106 @@
+# app/core/database.py
+import os
+import uuid
+import urllib.parse
 import pyodbc
 import time
-import random
+from sqlalchemy import create_engine, inspect
+from sqlalchemy.orm import sessionmaker, DeclarativeBase
 from app.core.config import Settings
 
+# Instância global de Settings
+settings = Settings()
+
+# Configurações do banco (Busca no ambiente ou no Key Vault)
+DB_SERVER = settings.get_secret("DB_SERVER")
+DB_NAME = settings.get_secret("DB_NAME")
+DB_USER = settings.get_secret("DB_USER")
+DB_PASSWORD = settings.get_secret("DB_PASSWORD")
+
+# ============================================================================
+# 1. SQLAlchemy (Novo - Usado pelo BFF/Portal)
+# ============================================================================
+
+class Base(DeclarativeBase):
+    def to_dict(self):
+        unloaded = inspect(self).unloaded
+        return {
+            c.name: str(getattr(self, c.name)) if isinstance(getattr(self, c.name), uuid.UUID) else getattr(self, c.name)
+            for c in self.__table__.columns
+            if c.name not in unloaded
+        }
+
+engine = None
+SessionLocal = None
+
+if DB_SERVER and DB_NAME and DB_USER and DB_PASSWORD:
+    try:
+        connection_string = (
+            f"DRIVER={{ODBC Driver 18 for SQL Server}};"
+            f"SERVER={DB_SERVER};DATABASE={DB_NAME};"
+            f"UID={DB_USER};PWD={DB_PASSWORD};TrustServerCertificate=yes;"
+            f"Timeout=120;"
+        )
+        # Engine para SQLAlchemy
+        engine = create_engine(
+            f"mssql+pyodbc:///?odbc_connect={urllib.parse.quote_plus(connection_string)}",
+            connect_args={"timeout": 120}
+        )
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        print("[OK] SQLAlchemy: Conexão configurada.")
+    except Exception as e:
+        print(f"[ERRO] SQLAlchemy: Falha ao configurar: {e}")
+
+def get_db():
+    if not SessionLocal:
+        yield None
+        return
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+# ============================================================================
+# 2. DatabaseManager (Legado - Usado pelo Chatbot/BotEngine)
+# ============================================================================
+
 class DatabaseManager:
+    """
+    Mantém a compatibilidade com o Chatbot existente.
+    Utiliza chamadas diretas via pyodbc com suporte a retry.
+    """
     def __init__(self):
-        try:
-            settings = Settings()
-            self.conn_str = (
-                f"DRIVER={{ODBC Driver 18 for SQL Server}};"
-                f"SERVER={settings.get_secret('DB-SERVER')};"
-                f"DATABASE={settings.get_secret('DB-NAME-NOVA-APLICACAO')};"
-                f"UID={settings.get_secret('DB-USER')};"
-                f"PWD={settings.get_secret('DB-PASSWORD')};"
-                "Encrypt=yes;TrustServerCertificate=no;Connection Timeout=60;LoginTimeout=60;"
-            )
-        except Exception as e:
-            print(f"⚠️ AVISO: Falha ao configurar secrets do Banco: {e}")
-            self.conn_str = ""
+        self.conn_str = (
+            f"DRIVER={{ODBC Driver 18 for SQL Server}};"
+            f"SERVER={DB_SERVER};DATABASE={DB_NAME};"
+            f"UID={DB_USER};PWD={DB_PASSWORD};TrustServerCertificate=yes;"
+            f"Timeout=120;"
+        )
 
     def _get_connection(self):
         return pyodbc.connect(self.conn_str)
 
-    def _execute_with_retry(self, operation_func, query, params=None):
-        """
-        Mecanismo central de imunidade.
-        Tenta executar uma função (leitura ou escrita) várias vezes.
-        """
-        max_retries = 6
-        base_delay = 2   
-        
-        for attempt in range(max_retries):
+    def _execute_with_retry(self, op, query, params=None, retries=3):
+        for i in range(retries):
             conn = None
             try:
                 conn = self._get_connection()
                 cursor = conn.cursor()
-                
-                result = operation_func(cursor, query, params)
-                
-                if operation_func.__name__ == '_write_op':
-                    conn.commit()
-                
+                result = op(cursor, query, params)
+                conn.commit()
                 return result
-
-            except pyodbc.Error as e:
-                error_msg = str(e)
-                is_transient_error = any(code in error_msg for code in ['08001', 'HYT00', '08S01', '10054', 'TCP Provider'])
-                
-                if is_transient_error:
-                    if attempt < max_retries - 1:
-                       
-                        sleep_time = (base_delay * (2 ** attempt)) + random.uniform(0, 1)
-                        
-                        print(f"💤 [DB] Banco dormindo ou falha de rede. Tentativa {attempt+1}/{max_retries}.")
-                        print(f"⏳ Aguardando {sleep_time:.2f}s para acordar o Azure...")
-                        time.sleep(sleep_time)
-                        continue 
-                
-                print(f"🔥 Erro Fatal no Banco (Tentativa {attempt+1}): {e}")
-                return None
-                
-            except Exception as e:
-                print(f"🔥 Erro Genérico: {e}")
-                return None
-                
+            except (pyodbc.Error, Exception) as e:
+                print(f"[RETRY {i+1}/{retries}] Erro no banco: {e}")
+                if i == retries - 1:
+                    raise e
+                time.sleep(2 ** i)
             finally:
                 if conn:
                     try:
                         conn.close()
                     except:
                         pass
-        
         return None
 
     def _read_one_op(self, cursor, query, params):
@@ -81,34 +111,35 @@ class DatabaseManager:
         cursor.execute(query, params or ())
         return True
 
+    def _read_all_op(self, cursor, query, params):
+        cursor.execute(query, params or ())
+        return cursor.fetchall()
+
     def execute_read_one(self, query, params=None):
         return self._execute_with_retry(self._read_one_op, query, params)
+
+    def execute_read_all(self, query, params=None):
+        return self._execute_with_retry(self._read_all_op, query, params)
 
     def execute_write(self, query, params=None):
         result = self._execute_with_retry(self._write_op, query, params)
         return result is True
 
     def execute_transaction(self, queries_with_params):
+        """Executa múltiplas queries em uma única transação"""
         conn = None
         try:
-            # Retry manual simplificado para conexão inicial da transação
-            for i in range(4): # Tenta por uns ~15 segundos
-                try:
-                    conn = self._get_connection()
-                    break
-                except:
-                    if i < 3: time.sleep(5)
-            
-            if not conn: return False
-
+            conn = self._get_connection()
             cursor = conn.cursor()
             for query, params in queries_with_params:
                 cursor.execute(query, params or ())
             conn.commit()
             return True
         except Exception as e:
-            if conn: conn.rollback()
-            print(f"🔥 Erro Transação: {e}")
+            print(f"[ERRO] Transação falhou: {e}")
+            if conn:
+                conn.rollback()
             return False
         finally:
-            if conn: conn.close()
+            if conn:
+                conn.close()
