@@ -1,4 +1,4 @@
-from app.services.session_service import SessionService
+from app.services.chatbot.session_service import SessionService
 
 class ModuloOnboarding:
     def __init__(self):
