@@ -17,8 +17,8 @@ class PedidoResponse(BaseModel):
     Numero: Optional[str]
     Complemento: Optional[str]
     Valor: Optional[float]
-    Lat: Optional[str]
-    Lng: Optional[str]
+    Lat: Optional[float]
+    Lng: Optional[float]
     PrazoConclusaoOS: Optional[str] # Formatado como string
     Atividade: str # Nome do serviço (Vindo do relacionamento)
     TempoMedio: Optional[float] # Tempo médio (Vindo do relacionamento)
