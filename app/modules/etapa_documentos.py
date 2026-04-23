@@ -1,5 +1,5 @@
 from app.core.database import DatabaseManager
-from app.services.azure_blob_service import AzureBlobService
+from app.services.infra.azure_blob_service import AzureBlobService
 
 class EtapaDocumentos:
     def __init__(self):
