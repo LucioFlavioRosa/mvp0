@@ -41,7 +41,7 @@ async def protected_health_check():
 # ==============================================================================
 
 # Rota de Pedidos -> Acessível via /api/pedidos (Padrão simples e direto)
-app.include_router(route_pedidos.router, tags=["Pedidos"])
+app.include_router(route_pedidos.router, prefix="/api/pedidos", tags=["Pedidos"])
 
 # Rotas do Chatbot -> Contém o Webhook (/bot) e APIs de Integração com o WhatsApp
 app.include_router(route_chatbot.router)
