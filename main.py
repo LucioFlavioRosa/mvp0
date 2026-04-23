@@ -16,6 +16,7 @@ from app.services.dispatch_service import DispatchService
 from app.core.config import Settings
 from app.core.auth import get_bff_token
 from fastapi import Depends
+from app.api.v1.endpoints import pedidos as api_pedidos
 
 # ==============================================================================
 # 1. INICIALIZAÇÃO E VARIÁVEIS DE AMBIENTE - DEV
@@ -127,8 +128,10 @@ async def protected_health_check():
         "environment": "Azure Production"
     }
 
+app.include_router(api_pedidos.router, prefix="/api/v1/pedidos", tags=["Pedidos"])
+
 # ==============================================================================
-# 3. ROTAS DA APLICAÇÃO
+# 3. ROTAS DA APLICAÇÃO (CHATBOT)
 # ==============================================================================
 @app.get("/")
 def health_check():
