@@ -6,19 +6,18 @@ import traceback
 from app.core.database import get_db
 from app.core.auth import get_bff_token
 from app.schemas.pedido import PedidosListResponse
-from app.services.pedido_service import PedidoService
+from app.services.pedidos.pedido_service import PedidoService # Import ajustado
 
 router = APIRouter()
 
-@router.get("/", response_model=PedidosListResponse)
+@router.get("/api/pedidos", response_model=PedidosListResponse, dependencies=[Depends(get_bff_token)])
 async def list_pedidos(
     status: Optional[str] = Query(None, description="Filtrar por Status"),
     urgencia: Optional[str] = Query(None, description="Filtrar por Urgência"),
     unidade: Optional[str] = Query(None, description="Filtrar por Nome da Unidade"),
     tipo_servico: Optional[str] = Query(None, description="Filtrar por Nome do Serviço"),
     bloco: Optional[str] = Query(None, description="Filtrar por Bloco"),
-    db: Session = Depends(get_db),
-    token: str = Depends(get_bff_token) # Trava de segurança
+    db: Session = Depends(get_db)
 ):
     """
     Retorna a lista de pedidos filtrados e formatados para consumo do BFF.
@@ -36,4 +35,25 @@ async def list_pedidos(
         return resultado
     except Exception as e:
         traceback.print_exc()
-        return {"error": str(e)} # Em produção, usar HTTPException
+        return {"error": str(e)} 
+
+@router.get("/{pedido_id}", dependencies=[Depends(get_bff_token)])
+async def get_pedido_detalhes(
+    pedido_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Retorna os detalhes de um pedido específico, junto com a lista
+    de parceiros qualificados (calculada a distância via geopy e formatada).
+    """
+    from fastapi import HTTPException
+    try:
+        resultado = PedidoService.obter_pedido_detalhado(db, pedido_id)
+        if not resultado:
+            raise HTTPException(status_code=404, detail="Pedido não encontrado")
+        return resultado
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Erro interno ao buscar pedido")

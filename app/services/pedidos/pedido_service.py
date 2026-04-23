@@ -1,7 +1,9 @@
-from sqlalchemy.orm import Session, contains_eager
+from sqlalchemy.orm import Session, contains_eager, joinedload
 from sqlalchemy import distinct, select, case
-from app.models import PedidoServico, Unidade, CatalogoServico
+from app.models import PedidoServico, Unidade, CatalogoServico, VwParceiroDetalhado
 from typing import Optional, Dict, Any, List
+import uuid
+from app.schemas.pedido import ParceiroDetalheResponse
 
 class PedidoService:
     @staticmethod
@@ -94,4 +96,62 @@ class PedidoService:
                 "tipos_servico": lista_tipos_servicos,
                 "blocos": lista_blocos
             }
+        }
+
+    @staticmethod
+    def obter_pedido_detalhado(db: Session, pedido_uuid: str) -> Dict[str, Any]:
+        """
+        Busca um pedido específico e resolve o Match de Parceiros.
+        O Backend calcula distâncias (geopy) e aplica regras de formatação aqui.
+        """
+        # 1. Buscar Pedido (Com relacionamento)
+        try:
+            pid = uuid.UUID(pedido_uuid)
+        except ValueError:
+            raise ValueError("UUID Invalido")
+
+        stmt = select(PedidoServico).options(joinedload(PedidoServico.tipo_servico_ref), joinedload(PedidoServico.unidade_obj)).where(PedidoServico.PedidoID == pid)
+        pedido = db.execute(stmt).scalars().first()
+
+        if not pedido: return None
+
+        # Formatar dicionário de Pedido para o endpoint
+        pedido_dict = pedido.to_dict()
+        pedido_dict['TempoMedio'] = pedido.tipo_servico_ref.TempoMedioExecucao if pedido.tipo_servico_ref else 0.0
+        pedido_dict['Atividade'] = pedido.tipo_servico_ref.Nome if pedido.tipo_servico_ref else ""
+        pedido_dict['UnidadeNome'] = pedido.unidade_obj.NomeUnidade if pedido.unidade_obj else None
+        pedido_dict['PrazoConclusaoOS'] = pedido.PrazoConclusaoOS.strftime('%d/%m/%Y %H:%M') if pedido.PrazoConclusaoOS else ""
+
+        # Obter Coordenadas para cálculo
+        lat_pedido, lng_pedido = -1.4558, -48.4902 # Default fallback
+        if pedido.Lat and pedido.Lng:
+            lat_pedido, lng_pedido = float(pedido.Lat), float(pedido.Lng)
+
+        # 2. Processar Parceiros Compatíveis
+        parceiros_finais = []
+        if pedido.StatusPedido != 'CANCELADO':
+            # Base Query: ativos e com coordenadas
+            query_parceiros = select(VwParceiroDetalhado).where(
+                (VwParceiroDetalhado.StatusAtual == 'ATIVO') &
+                (VwParceiroDetalhado.Lat != None) & 
+                (VwParceiroDetalhado.Lon != None)
+            )
+
+            # Filtro exclusivo de vinculado
+            if pedido.StatusPedido == 'VINCULADO' and pedido.ParceiroAlocadoUUID:
+                query_parceiros = query_parceiros.where(VwParceiroDetalhado.ParceiroUUID == pedido.ParceiroAlocadoUUID)
+            
+            parceiros_obj = db.execute(query_parceiros).scalars().all()
+            
+            # Utilizar o schema para formatar dados (Máscaras, Fotos e Distância Geopy)
+            for p in parceiros_obj:
+                p_formatado = ParceiroDetalheResponse.from_orm_model(p, lat_pedido, lng_pedido)
+                parceiros_finais.append(p_formatado.model_dump())
+            
+            # Ordenar pela menor distância
+            parceiros_finais = sorted(parceiros_finais, key=lambda x: x.get('distancia', 999.0))
+
+        return {
+            "pedido": pedido_dict,
+            "parceiros": parceiros_finais
         }
