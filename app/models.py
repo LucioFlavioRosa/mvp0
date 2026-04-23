@@ -105,7 +105,7 @@ class CatalogoCidadePara(Base):
     NomeCidade: Mapped[str] = mapped_column(String(100), nullable=False)
 
     # Relacionamentos
-    subregiao: Mapped['CatalogoCidadePara'] = relationship(back_populates='cidades')
+    subregiao: Mapped['CatalogoSubregiao'] = relationship(back_populates='cidades')
     unidades: Mapped[List['Unidade']] = relationship(back_populates='cidade_obj')
 
 
