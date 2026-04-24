@@ -35,7 +35,6 @@ class PedidoService:
         # 2. Query Principal de Pedidos
         stmt = (
             select(PedidoServico)
-            .where(~PedidoServico.agrupamentos_vinculados.any())
             .join(PedidoServico.tipo_servico_ref) 
             .join(PedidoServico.unidade_obj) 
             .options(contains_eager(PedidoServico.tipo_servico_ref))
@@ -90,11 +89,11 @@ class PedidoService:
             "pedidos": pedidos_formatados,
             "total": len(pedidos_formatados),
             "filtros_disponiveis": {
-                "status": lista_status,
-                "urgencias": lista_urgencia,
-                "unidades": lista_unidades,
-                "tipos_servico": lista_tipos_servicos,
-                "blocos": lista_blocos
+                "lista_status": lista_status,
+                "lista_urgencias": lista_urgencia,
+                "lista_unidades": lista_unidades,
+                "lista_tipos_servicos": lista_tipos_servicos,
+                "lista_blocos": lista_blocos
             }
         }
 
