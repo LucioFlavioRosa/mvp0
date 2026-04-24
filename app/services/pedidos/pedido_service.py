@@ -22,17 +22,23 @@ class PedidoService:
         # 1. Busca filtros disponíveis
         lista_status = db.execute(select(distinct(PedidoServico.StatusPedido)).where(PedidoServico.StatusPedido != None)).scalars().all()
         lista_urgencia = db.execute(select(distinct(PedidoServico.Urgencia)).where(PedidoServico.Urgencia != None)).scalars().all()
+        # 1. Busca de Filtros (Para popular os dropdowns)
+        print("🔍 [DEBUG-BACKEND] Iniciando busca de filtros...")
         
         stmt_unidades = select(distinct(Unidade.NomeUnidade)).join(PedidoServico, PedidoServico.UnidadeID == Unidade.UnidadeID)
         lista_unidades = db.execute(stmt_unidades).scalars().all() 
+        print(f"🔍 [DEBUG-BACKEND] Unidades encontradas: {len(lista_unidades)}")
 
         stmt_tipos_servicos = select(distinct(CatalogoServico.Nome)).join(PedidoServico, PedidoServico.TipoServicoID == CatalogoServico.ServicoID)
         lista_tipos_servicos = db.execute(stmt_tipos_servicos).scalars().all() 
+        print(f"🔍 [DEBUG-BACKEND] Tipos de serviço encontrados: {len(lista_tipos_servicos)}")
 
         stmt_blocos = select(distinct(PedidoServico.Bloco)).where(PedidoServico.Bloco != None)
         lista_blocos = db.execute(stmt_blocos).scalars().all()
+        print(f"🔍 [DEBUG-BACKEND] Blocos encontrados: {len(lista_blocos)}")
 
         # 2. Query Principal de Pedidos
+        print(f"🔍 [DEBUG-BACKEND] Executando query principal (Filtros: status={status}, urgencia={urgencia})...")
         stmt = (
             select(PedidoServico)
             .join(PedidoServico.tipo_servico_ref) 
@@ -74,6 +80,7 @@ class PedidoService:
         )
         
         pedidos_obj = db.execute(stmt).scalars().all()
+        print(f"🔍 [DEBUG-BACKEND] Pedidos brutos retornados do SQL Server: {len(pedidos_obj)}")
         
         # Formatando para o Response Schema
         pedidos_formatados = []
