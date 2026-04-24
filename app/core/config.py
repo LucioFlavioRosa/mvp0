@@ -1,4 +1,7 @@
 import os
+from dotenv import load_dotenv
+load_dotenv()
+
 from azure.identity import DefaultAzureCredential
 from azure.keyvault.secrets import SecretClient
 from threading import Lock

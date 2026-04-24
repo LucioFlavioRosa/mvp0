@@ -1,3 +1,6 @@
+from app.schemas.pedido import PedidoUpdateRequest
+from datetime import datetime
+from app.schemas.pedido import PedidoCreateRequest
 from sqlalchemy.orm import Session, contains_eager, joinedload
 from sqlalchemy import distinct, select, case
 from app.models import PedidoServico, Unidade, CatalogoServico, VwParceiroDetalhado
@@ -94,7 +97,8 @@ class PedidoService:
                 "lista_urgencias": lista_urgencia,
                 "lista_unidades": lista_unidades,
                 "lista_tipos_servicos": lista_tipos_servicos,
-                "lista_blocos": lista_blocos
+                "lista_blocos": lista_blocos,
+                "unidades_completas": [{"id": u.UnidadeID, "nome": u.NomeUnidade} for u in db.execute(select(Unidade)).scalars().all()]
             }
         }
 
@@ -303,3 +307,64 @@ class PedidoService:
             db.rollback()
             print(f"🔥 Erro ao desvincular pedido {pedido_uuid}: {e}")
             return False
+            
+    @staticmethod
+    def criar_pedido(db: Session, dados: PedidoCreateRequest) -> Optional[PedidoServico]:
+        """
+        Cria uma nova Ordem de Serviço no banco de dados via ORM.
+        Aplica geocodificação automática caso não venha no payload.
+        """
+        from app.services.infra.geocoding_service import GeocodingService
+        
+        try:
+            lat = dados.Lat
+            lng = dados.Lng
+            
+            if lat is None or lng is None:
+                lat, lng = GeocodingService.geocodificar_endereco(
+                    rua=dados.Rua, 
+                    numero=dados.Numero, 
+                    bairro=dados.Bairro, 
+                    cidade=dados.Cidade
+                )
+                dados.Lat = lat
+                dados.Lng = lng
+
+            novo_pedido = PedidoServico(
+                PedidoID=uuid.uuid4(),
+                StatusPedido='AGUARDANDO',
+                DataCriacao=datetime.now(),
+                **dados.dict()
+            )
+            db.add(novo_pedido)
+            db.commit()
+            db.refresh(novo_pedido)
+            return novo_pedido
+        except Exception as e:
+            db.rollback()
+            print(f"🔥 Erro ao criar pedido: {e}")
+            return None
+
+    @staticmethod
+    def atualizar_pedido(db: Session, pedido_uuid: str, dados: PedidoUpdateRequest) -> Optional[PedidoServico]:
+        """
+        Atualiza campos de um pedido existente (PATCH).
+        """
+        try:
+            pid = uuid.UUID(pedido_uuid)
+            pedido = db.query(PedidoServico).filter(PedidoServico.PedidoID == pid).first()
+            
+            if not pedido:
+                return None
+
+            update_data = dados.dict(exclude_unset=True)
+            for key, value in update_data.items():
+                setattr(pedido, key, value)
+
+            db.commit()
+            db.refresh(pedido)
+            return pedido
+        except Exception as e:
+            db.rollback()
+            print(f"🔥 Erro ao atualizar pedido {pedido_uuid}: {e}")
+            return None

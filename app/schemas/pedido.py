@@ -61,6 +61,49 @@ class PedidosListResponse(BaseModel):
 class DesvincularRequest(BaseModel):
     mensagem: Optional[str] = Field(None, description="Mensagem opcional de justificativa")
 
+class PedidoCreateRequest(BaseModel):
+    TipoServicoID: int
+    UnidadeID: int
+    Bloco: str
+    Rua: str
+    Numero: str
+    Bairro: str
+    Cidade: str
+    CEP: str
+    MatriculaSCAE: str
+    NumeroOSSCAE: str
+    DataAberturaSCAE: datetime
+    PrazoConclusaoOS: datetime
+    Urgencia: str
+    Observacao: Optional[str] = None
+    Complemento: Optional[str] = None
+    Valor: float
+    Lat: Optional[float] = None
+    Lng: Optional[float] = None
+    ParceiroAlocadoUUID: Optional[uuid.UUID] = None
+
+class PedidoUpdateRequest(BaseModel):
+    TipoServicoID: Optional[int] = None
+    UnidadeID: Optional[int] = None
+    Bloco: Optional[str] = None
+    Rua: Optional[str] = None
+    Numero: Optional[str] = None
+    Bairro: Optional[str] = None
+    Cidade: Optional[str] = None
+    CEP: Optional[str] = None
+    MatriculaSCAE: Optional[str] = None
+    NumeroOSSCAE: Optional[str] = None
+    DataAberturaSCAE: Optional[datetime] = None
+    PrazoConclusaoOS: Optional[datetime] = None
+    Urgencia: Optional[str] = None
+    Observacao: Optional[str] = None
+    Complemento: Optional[str] = None
+    Valor: Optional[float] = None
+    Lat: Optional[float] = None
+    Lng: Optional[float] = None
+    ParceiroAlocadoUUID: Optional[uuid.UUID] = None
+    StatusPedido: Optional[str] = None
+
 class ParceiroDetalheResponse(BaseModel):
     ParceiroUUID: uuid.UUID
     NomeCompleto: Optional[str]

@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+
+# Ambientes virtuais
+venv/
+env/
+.venv/
+.env/
+
+# Variáveis de ambiente (NUNCA versionar)
+.env
+.env.*
+!.env.example
+
+# Alembic cache
+alembic/__pycache__/
+alembic/versions/__pycache__/
+
+# IDEs
+.vscode/
+.idea/
+*.suo
+*.user
+
+# Sistema
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Distribuição / empacotamento
+dist/
+build/
+*.egg-info/

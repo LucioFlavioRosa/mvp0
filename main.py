@@ -7,6 +7,9 @@ from app.core.auth import get_bff_token
 # Rotas Limpas
 from app.routes import pedidos as route_pedidos
 from app.routes import chatbot as route_chatbot
+from app.routes import unidades as route_unidades
+from app.routes import servicos as route_servicos
+from app.routes import parceiros as route_parceiros
 
 # ==============================================================================
 # 1. INICIALIZAÇÃO
@@ -45,3 +48,12 @@ app.include_router(route_pedidos.router, prefix="/api/pedidos", tags=["Pedidos"]
 
 # Rotas do Chatbot -> Contém o Webhook (/bot) e APIs de Integração com o WhatsApp
 app.include_router(route_chatbot.router)
+
+# Rotas Estruturais -> Unidades com serviços ativos
+app.include_router(route_unidades.router, prefix="/api/unidades", tags=["Unidades"])
+
+# Rotas de Serviços -> Catálogo geral
+app.include_router(route_servicos.router, prefix="/api/servicos", tags=["Serviços"])
+
+# Rotas de Parceiros -> Match de parceiros aptos
+app.include_router(route_parceiros.router, prefix="/api/parceiros", tags=["Parceiros"])

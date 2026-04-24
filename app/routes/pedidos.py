@@ -58,7 +58,36 @@ async def get_pedido_detalhes(
         traceback.print_exc()
         raise HTTPException(status_code=500, detail="Erro interno ao buscar pedido")
 
-from app.schemas.pedido import DesvincularRequest
+from app.schemas.pedido import DesvincularRequest, PedidoCreateRequest, PedidoUpdateRequest
+
+@router.post("", dependencies=[Depends(get_bff_token)])
+async def criar_pedido(
+    data: PedidoCreateRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Cria uma nova Ordem de Serviço no Backend.
+    """
+    from fastapi import HTTPException
+    novo_pedido = PedidoService.criar_pedido(db, data)
+    if not novo_pedido:
+        raise HTTPException(status_code=400, detail="Erro ao criar a Ordem de Serviço.")
+    return {"success": True, "PedidoID": novo_pedido.PedidoID}
+
+@router.patch("/{pedido_id}", dependencies=[Depends(get_bff_token)])
+async def editar_pedido(
+    pedido_id: str,
+    data: PedidoUpdateRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Atualiza campos específicos de uma Ordem de Serviço (PATCH).
+    """
+    from fastapi import HTTPException
+    pedido_atualizado = PedidoService.atualizar_pedido(db, pedido_id, data)
+    if not pedido_atualizado:
+        raise HTTPException(status_code=404, detail="Pedido não encontrado ou erro na atualização.")
+    return {"success": True, "message": "Pedido atualizado com sucesso"}
 
 @router.post("/{pedido_id}/desvincular", dependencies=[Depends(get_bff_token)])
 async def desvincular_pedido(
