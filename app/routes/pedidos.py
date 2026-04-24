@@ -10,7 +10,7 @@ from app.services.pedidos.pedido_service import PedidoService # Import ajustado
 
 router = APIRouter()
 
-@router.get("/", response_model=PedidosListResponse, dependencies=[Depends(get_bff_token)])
+@router.get("", response_model=PedidosListResponse, dependencies=[Depends(get_bff_token)])
 async def list_pedidos(
     status: Optional[str] = Query(None, description="Filtrar por Status"),
     urgencia: Optional[str] = Query(None, description="Filtrar por Urgência"),
