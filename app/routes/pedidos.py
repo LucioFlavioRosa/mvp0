@@ -57,3 +57,24 @@ async def get_pedido_detalhes(
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail="Erro interno ao buscar pedido")
+
+from app.schemas.pedido import DesvincularRequest
+
+@router.post("/{pedido_id}/desvincular", dependencies=[Depends(get_bff_token)])
+async def desvincular_pedido(
+    pedido_id: str,
+    data: DesvincularRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Desvincula o parceiro alocado de um pedido e volta seu status para AGUARDANDO.
+    """
+    from fastapi import HTTPException
+    try:
+        sucesso = PedidoService.desvincular_parceiro(db, pedido_id, data.mensagem)
+        if not sucesso:
+            raise HTTPException(status_code=400, detail="Não foi possível desvincular o parceiro deste pedido.")
+        return {"success": True, "message": "Parceiro desvinculado com sucesso"}
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Erro interno ao desvincular parceiro")

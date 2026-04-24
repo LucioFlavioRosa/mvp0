@@ -4,6 +4,8 @@ from twilio.rest import Client
 import json
 import time
 
+from sqlalchemy.orm import Session
+from app.core.database import get_db
 from app.core.config import Settings
 from app.core.auth import get_bff_token
 from app.bot_engine import BotEngine
@@ -61,9 +63,9 @@ def enviar_sequencia_background(mensagens, bot_number, sender_id):
 # ROTAS INTERNAS DA API (USADAS PELO PORTAL)
 # ==============================================================================
 @router.post("/api/dispatch", dependencies=[Depends(get_bff_token)], tags=["Integração"])
-async def dispatch_order(data: DispatchRequest):
+async def dispatch_order(data: DispatchRequest, db: Session = Depends(get_db)):
     print(f"🚀 API Dispatch: Pedido {data.pedido_uuid} -> {len(data.parceiros)} parceiros.")
-    return dispatch_service.enviar_oferta_para_prestadores(data.parceiros, data.pedido_uuid)
+    return dispatch_service.enviar_oferta_para_prestadores(db, data.parceiros, data.pedido_uuid)
 
 @router.post("/api/send-message", dependencies=[Depends(get_bff_token)], tags=["Integração"])
 async def sendMessage(data: SendMessageRequest):

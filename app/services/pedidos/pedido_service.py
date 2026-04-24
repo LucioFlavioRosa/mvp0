@@ -275,3 +275,31 @@ class PedidoService:
             "pedido": pedido,
             "parceiros": parceiros_final
         }
+
+    @staticmethod
+    def desvincular_parceiro(db: Session, pedido_uuid: str, mensagem: str = None) -> bool:
+        """
+        Remove o parceiro alocado de um pedido e volta seu status para AGUARDANDO.
+        """
+        try:
+            pid = uuid.UUID(pedido_uuid)
+            pedido = db.query(PedidoServico).filter(PedidoServico.PedidoID == pid).first()
+            
+            if not pedido:
+                return False
+
+            # Lógica legada: Limpar vínculo e resetar status
+            pedido.ParceiroAlocadoUUID = None
+            pedido.StatusPedido = 'AGUARDANDO'
+            
+            if mensagem:
+                # Adiciona a justificativa à observação mantendo o que já existia
+                obs_atual = pedido.Observacao or ""
+                pedido.Observacao = f"{obs_atual}\n[DESVINCULAR]: {mensagem}".strip()
+
+            db.commit()
+            return True
+        except Exception as e:
+            db.rollback()
+            print(f"🔥 Erro ao desvincular pedido {pedido_uuid}: {e}")
+            return False

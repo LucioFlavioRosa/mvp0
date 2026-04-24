@@ -58,6 +58,9 @@ class PedidosListResponse(BaseModel):
     total: int
     filtros_disponiveis: dict
 
+class DesvincularRequest(BaseModel):
+    mensagem: Optional[str] = Field(None, description="Mensagem opcional de justificativa")
+
 class ParceiroDetalheResponse(BaseModel):
     ParceiroUUID: uuid.UUID
     NomeCompleto: Optional[str]
