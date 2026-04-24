@@ -101,57 +101,177 @@ class PedidoService:
     @staticmethod
     def obter_pedido_detalhado(db: Session, pedido_uuid: str) -> Dict[str, Any]:
         """
-        Busca um pedido específico e resolve o Match de Parceiros.
-        O Backend calcula distâncias (geopy) e aplica regras de formatação aqui.
+        Busca um pedido específico e resolve o Match de Parceiros usando a lógica legada comprovada.
         """
-        # 1. Buscar Pedido (Com relacionamento)
+        pedido = None
+        parceiros_final = []
+        lat_pedido, lng_pedido = -1.4558, -48.4902
+        
         try:
             pid = uuid.UUID(pedido_uuid)
         except ValueError:
-            raise ValueError("UUID Invalido")
+            return {"pedido": None, "parceiros": []}
 
-        stmt = select(PedidoServico).options(joinedload(PedidoServico.tipo_servico_ref), joinedload(PedidoServico.unidade_obj)).where(PedidoServico.PedidoID == pid)
-        pedido = db.execute(stmt).scalars().first()
-
-        if not pedido: return None
-
-        # Formatar dicionário de Pedido para o endpoint
-        pedido_dict = pedido.to_dict()
-        pedido_dict['TempoMedio'] = pedido.tipo_servico_ref.TempoMedioExecucao if pedido.tipo_servico_ref else 0.0
-        pedido_dict['Atividade'] = pedido.tipo_servico_ref.Nome if pedido.tipo_servico_ref else ""
-        pedido_dict['UnidadeNome'] = pedido.unidade_obj.NomeUnidade if pedido.unidade_obj else None
-        pedido_dict['PrazoConclusaoOS'] = pedido.PrazoConclusaoOS.strftime('%d/%m/%Y %H:%M') if pedido.PrazoConclusaoOS else ""
-
-        # Obter Coordenadas para cálculo
-        lat_pedido, lng_pedido = -1.4558, -48.4902 # Default fallback
-        if pedido.Lat and pedido.Lng:
-            lat_pedido, lng_pedido = float(pedido.Lat), float(pedido.Lng)
-
-        # 2. Processar Parceiros Compatíveis
-        parceiros_finais = []
-        if pedido.StatusPedido != 'CANCELADO':
-            # Base Query: ativos e com coordenadas
-            query_parceiros = select(VwParceiroDetalhado).where(
-                (VwParceiroDetalhado.StatusAtual == 'ATIVO') &
-                (VwParceiroDetalhado.Lat != None) & 
-                (VwParceiroDetalhado.Lon != None)
-            )
-
-            # Filtro exclusivo de vinculado
-            if pedido.StatusPedido == 'VINCULADO' and pedido.ParceiroAlocadoUUID:
-                query_parceiros = query_parceiros.where(VwParceiroDetalhado.ParceiroUUID == pedido.ParceiroAlocadoUUID)
+        try:
+            # Busca pedido
+            stmt = select(PedidoServico).options(joinedload(PedidoServico.tipo_servico_ref)).where(PedidoServico.PedidoID == pid)
+            pedido_obj = db.execute(stmt).scalars().first()
             
-            parceiros_obj = db.execute(query_parceiros).scalars().all()
-            
-            # Utilizar o schema para formatar dados (Máscaras, Fotos e Distância Geopy)
-            for p in parceiros_obj:
-                p_formatado = ParceiroDetalheResponse.from_orm_model(p, lat_pedido, lng_pedido)
-                parceiros_finais.append(p_formatado.model_dump())
-            
-            # Ordenar pela menor distância
-            parceiros_finais = sorted(parceiros_finais, key=lambda x: x.get('distancia', 999.0))
+            if pedido_obj:
+                pedido = pedido_obj.to_dict()
+                
+                # Atualizando dados espaciais
+                if pedido.get('Lat') and pedido.get('Lng'):
+                    lat_pedido = float(pedido['Lat'])
+                    lng_pedido = float(pedido['Lng'])
+                
+                # Adicionando o nome do serviço para exibição no template
+                pedido['Atividade'] = pedido_obj.tipo_servico_ref.Nome if pedido_obj.tipo_servico_ref else "Serviço Não Informado"
+                
+                # Formatação de campos
+                pedido['PrazoConclusaoOS'] = pedido_obj.PrazoConclusaoOS.strftime('%d/%m/%Y-%H:%M') if pedido_obj.PrazoConclusaoOS else ""
+
+                status = pedido['StatusPedido'] if pedido['StatusPedido'] else 'Aguardando'
+                
+                stmt_parc = None
+                if status.upper() == 'AGUARDANDO':
+                    # Ainda não selecionou um parceiro, então mostra todos os parceiros disponíveis para o tipo de serviço
+                    ts_id_str = str(pedido['TipoServicoID'])
+                    stmt_parc = (
+                        select(VwParceiroDetalhado)
+                        .where(VwParceiroDetalhado.HabIDs.contains(ts_id_str))
+                    )
+
+                elif status.upper() in ['VINCULADO', 'FINALIZADO', 'CANCELADO']:
+                    parceiro_id = str(pedido['ParceiroAlocadoUUID'])
+                    # Lógica para pedidos que já têm parceiro alocado
+                    stmt_parc = select(VwParceiroDetalhado).where(VwParceiroDetalhado.ParceiroUUID == parceiro_id)
+
+                if stmt_parc is not None:
+                    parceiros_obj = db.execute(stmt_parc).scalars().all()
+                    parceiros = [p.to_dict() for p in parceiros_obj]
+                    
+                    # Carregar bibliotecas e utilitários necessários para formatação
+                    from geopy.distance import geodesic
+                    # Vamos importar as funções utilitárias que replicam a lógica antiga do utils
+                    from app.schemas.pedido import formatar_telefone, formatar_documento, gerar_url_foto
+                    
+                    # Dicionários mockados equivalentes aos do utils para manter a interface igual
+                    STATUS_DESC = {
+                        'ATIVO': {'label': 'Ativo', 'color': 'success'},
+                        'INATIVO': {'label': 'Inativo', 'color': 'danger'},
+                        'EM_ANALISE': {'label': 'Em Análise', 'color': 'warning'},
+                        'SUSPENSO': {'label': 'Suspenso', 'color': 'danger'}
+                    }
+                    DIAS_DESC = {0:'Seg', 1:'Ter', 2:'Qua', 3:'Qui', 4:'Sex', 5:'Sáb', 6:'Dom'}
+                    PERIODOS_DESC = {1:'Manhã', 2:'Tarde', 3:'Noite'}
+                    
+                    # Busca habilidades para tradução do Catalogo
+                    catalogo_stmt = select(CatalogoServico.ServicoID, CatalogoServico.Nome)
+                    cat_result = db.execute(catalogo_stmt).all()
+                    catalogo_desc = {r.ServicoID: r.Nome for r in cat_result}
+
+                    for p in parceiros:                    
+                        # Calcula distância
+                        if p.get('Lat') and p.get('Lon'):
+                            try:
+                                p['distancia'] = round(geodesic(
+                                    (float(p['Lat']), float(p['Lon'])),
+                                    (lat_pedido, lng_pedido)
+                                ).kilometers, 2)
+                            except:
+                                p['distancia'] = 999.0
+                        else:
+                            p['distancia'] = 999.0
+                        
+                        # URL da foto
+                        p['FotoUrl'] = gerar_url_foto(p.get('ParceiroUUID', ''))
+                        
+                        # Formata telefone
+                        telefone = p.get('Telefone', '') or ''
+                        if not telefone and p.get('WhatsAppID'):
+                            whats_id = str(p.get('WhatsAppID', ''))
+                            telefone = whats_id.replace('whatsapp:+55', '').replace('whatsapp:+', '').replace('whatsapp:', '')
+                        p['TelefoneFormatado'] = formatar_telefone(telefone)
+                        
+                        # Formata documento
+                        if p.get('CNPJ'):
+                            p['DocumentoFormatado'] = formatar_documento(p.get('CNPJ'))
+                            p['TipoDocumento'] = 'CNPJ'
+                        else:
+                            p['DocumentoFormatado'] = formatar_documento(p.get('CPF'))
+                            p['TipoDocumento'] = 'CPF'
+                        
+                        # Status formatado
+                        status_p = p.get('StatusAtual', 'ATIVO') or 'ATIVO'
+                        status_info = STATUS_DESC.get(status_p, STATUS_DESC['ATIVO'])
+                        p['StatusLabel'] = status_info['label']
+                        p['StatusColor'] = status_info['color']
+                        
+                        # Habilidades
+                        habs = [catalogo_desc.get(int(x), f"Serviço {x}") for x in p.get('HabIDs', '').split(',') if x]
+                        p['HabilidadesDesc'] = ", ".join(habs) if habs else "Não informado"
+                        p['HabilidadesList'] = habs if habs else []
+                        
+                        # Disponibilidade
+                        disp_list = []
+                        if p.get('DispRaw'):
+                            for item in p['DispRaw'].split('|'):
+                                try:
+                                    dia_id, per_id = map(int, item.split(':'))
+                                    disp_list.append({
+                                        'dia': DIAS_DESC.get(dia_id, 'N/A'),
+                                        'periodo': PERIODOS_DESC.get(per_id, 'N/A'),
+                                        'texto': f"{DIAS_DESC.get(dia_id, 'N/A')} ({PERIODOS_DESC.get(per_id, 'N/A')})"
+                                    })
+                                except:
+                                    pass
+                        p['DisponibilidadeDesc'] = " | ".join([d['texto'] for d in disp_list]) if disp_list else "Não informado"
+                        p['DisponibilidadeList'] = disp_list
+                        
+                        # Último atendimento formatado
+                        if p.get('UltimoAtendimentoData'):
+                            try:
+                                p['UltimoAtendimentoDataFormatado'] = p['UltimoAtendimentoData'].strftime('%d/%m/%Y %H:%M')
+                            except:
+                                p['UltimoAtendimentoDataFormatado'] = "N/A"
+                        else:
+                            p['UltimoAtendimentoDataFormatado'] = None
+                        
+                        # Taxa de aceite
+                        total_recebidas = p.get('TotalOrdensRecebidas', 0) or 0
+                        total_concluidas = p.get('TotalOrdensConcluidas', 0) or 0
+                        if total_recebidas > 0:
+                            p['TaxaAceite'] = round((total_concluidas / total_recebidas) * 100, 1)
+                        else:
+                            p['TaxaAceite'] = None
+                        
+                        # Avaliação média
+                        if p.get('AvaliacaoMedia'):
+                            p['AvaliacaoMediaFormatada'] = round(float(p['AvaliacaoMedia']), 1)
+                        else:
+                            p['AvaliacaoMediaFormatada'] = None
+                        
+                        # Raio de atuação
+                        p['RaioAtuacao'] = p.get('DistanciaMaximaKm', 0) or 0
+                        
+                        # Endereço completo
+                        endereco_parts = [p.get('Rua', '')]
+                        if p.get('NumeroEndereco'):
+                            endereco_parts.append(str(p['NumeroEndereco']))
+                        p['EnderecoCompleto'] = ', '.join(filter(None, endereco_parts))
+                        
+                        parceiros_final.append(p)
+                    
+                    # Ordena por distância
+                    parceiros_final = sorted(parceiros_final, key=lambda x: x['distancia'])
+
+        except Exception as e:
+            print(f"🔥 [BACKEND] Erro ao buscar detalhes do pedido: {e}")
+            import traceback
+            traceback.print_exc()
 
         return {
-            "pedido": pedido_dict,
-            "parceiros": parceiros_finais
+            "pedido": pedido,
+            "parceiros": parceiros_final
         }
