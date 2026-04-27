@@ -1,6 +1,3 @@
-from app.schemas.pedido import PedidoUpdateRequest
-from datetime import datetime
-from app.schemas.pedido import PedidoCreateRequest
 from sqlalchemy.orm import Session, contains_eager, joinedload
 from sqlalchemy import distinct, select, case
 from app.models import PedidoServico, Unidade, CatalogoServico, VwParceiroDetalhado
@@ -96,8 +93,7 @@ class PedidoService:
                 "lista_urgencias": lista_urgencia,
                 "lista_unidades": lista_unidades,
                 "lista_tipos_servicos": lista_tipos_servicos,
-                "lista_blocos": lista_blocos,
-                "unidades_completas": [{"id": u.UnidadeID, "nome": u.NomeUnidade} for u in db.execute(select(Unidade)).scalars().all()]
+                "lista_blocos": lista_blocos
             }
         }
 

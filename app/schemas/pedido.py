@@ -55,7 +55,6 @@ class PedidoResponse(BaseModel):
 
 class PedidosListResponse(BaseModel):
     pedidos: List[PedidoResponse]
-    total: int
     filtros_disponiveis: dict
 
 class DesvincularRequest(BaseModel):
