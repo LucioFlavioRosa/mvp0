@@ -10,6 +10,7 @@ from app.routes import chatbot as route_chatbot
 from app.routes import unidades as route_unidades
 from app.routes import servicos as route_servicos
 from app.routes import parceiros as route_parceiros
+from app.routes import backoffice as route_backoffice
 
 # ==============================================================================
 # 1. INICIALIZAÇÃO
@@ -57,3 +58,6 @@ app.include_router(route_servicos.router, prefix="/api/servicos", tags=["Serviç
 
 # Rotas de Parceiros -> Match de parceiros aptos
 app.include_router(route_parceiros.router, prefix="/api/parceiros", tags=["Parceiros"])
+
+# Rotas de Backoffice -> KPIs, métricas e verificação de cobertura
+app.include_router(route_backoffice.router, prefix="/api/backoffice", tags=["Backoffice"])
