@@ -324,12 +324,7 @@ class PedidoService:
                 dados.Lat = lat
                 dados.Lng = lng
 
-            novo_pedido = PedidoServico(
-                PedidoID=uuid.uuid4(),
-                StatusPedido='AGUARDANDO',
-                DataCriacao=datetime.now(),
-                **dados.dict()
-            )
+            novo_pedido = PedidoServico(**dados.dict())
             db.add(novo_pedido)
             db.commit()
             db.refresh(novo_pedido)

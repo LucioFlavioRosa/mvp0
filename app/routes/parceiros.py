@@ -5,6 +5,11 @@ from typing import Optional
 from app.core.database import get_db
 from app.core.auth import get_bff_token
 from app.services.parceiros.match_service import MatchParceiroService
+from app.schemas.parceiro import (
+    ListarParceirosResponse,
+    DetalheParceiroResponse,
+    ParceirosComOSResponse
+)
 
 router = APIRouter()
 
@@ -33,7 +38,7 @@ async def match_parceiros(
         traceback.print_exc()
         raise HTTPException(status_code=500, detail="Erro ao buscar parceiros")
 
-@router.get("", dependencies=[Depends(get_bff_token)])
+@router.get("", dependencies=[Depends(get_bff_token)], response_model=ListarParceirosResponse)
 async def listar_parceiros(
     status: Optional[str] = Query(None),
     cidade: Optional[str] = Query(None),
@@ -60,24 +65,23 @@ async def listar_parceiros(
         traceback.print_exc()
         raise HTTPException(status_code=500, detail="Erro ao listar parceiros")
 
-@router.get("/vinculados/os", dependencies=[Depends(get_bff_token)])
+@router.get("/vinculados/os", dependencies=[Depends(get_bff_token)], response_model=ParceirosComOSResponse)
 async def parceiros_com_os(
-    filtro: Optional[str] = Query(None),
     db: Session = Depends(get_db)
 ):
     """
-    Retorna parceiros que possuem ordens de serviço vinculadas.
+    Retorna parceiros e suas ordens de serviço vinculadas.
     """
     try:
         from app.services.parceiros.parceiro_service import ParceiroService
-        return ParceiroService.parceiros_com_os(db, filtro)
+        return ParceiroService.parceiros_com_os(db)
     except Exception as e:
         from fastapi import HTTPException
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail="Erro ao buscar parceiros com OS")
 
-@router.get("/{parceiro_uuid}", dependencies=[Depends(get_bff_token)])
+@router.get("/{parceiro_uuid}", dependencies=[Depends(get_bff_token)], response_model=DetalheParceiroResponse)
 async def obter_parceiro_detalhe(
     parceiro_uuid: str,
     db: Session = Depends(get_db)

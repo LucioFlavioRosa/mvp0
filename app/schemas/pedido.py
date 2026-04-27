@@ -80,6 +80,7 @@ class PedidoCreateRequest(BaseModel):
     Lat: Optional[float] = None
     Lng: Optional[float] = None
     ParceiroAlocadoUUID: Optional[uuid.UUID] = None
+    StatusPedido: Optional[str] = "AGUARDANDO"
 
 class PedidoUpdateRequest(BaseModel):
     TipoServicoID: Optional[int] = None
