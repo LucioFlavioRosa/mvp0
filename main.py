@@ -11,6 +11,7 @@ from app.routes import unidades as route_unidades
 from app.routes import servicos as route_servicos
 from app.routes import parceiros as route_parceiros
 from app.routes import backoffice as route_backoffice
+from app.routes import agrupamentos as route_agrupamentos
 
 # ==============================================================================
 # 1. INICIALIZAÇÃO
@@ -61,3 +62,6 @@ app.include_router(route_parceiros.router, prefix="/api/parceiros", tags=["Parce
 
 # Rotas de Backoffice -> KPIs, métricas e verificação de cobertura
 app.include_router(route_backoffice.router, prefix="/api/backoffice", tags=["Backoffice"])
+
+# Rotas de Agrupamentos -> Match coletivo e disparo em lote
+app.include_router(route_agrupamentos.router, prefix="/api/agrupamentos", tags=["Agrupamentos"])
