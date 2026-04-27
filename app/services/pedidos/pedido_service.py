@@ -3,7 +3,8 @@ from sqlalchemy import distinct, select, case
 from app.models import PedidoServico, Unidade, CatalogoServico, VwParceiroDetalhado
 from typing import Optional, Dict, Any, List
 import uuid
-from app.schemas.pedido import ParceiroDetalheResponse
+from datetime import datetime
+from app.schemas.pedido import ParceiroDetalheResponse, PedidoCreateRequest, PedidoUpdateRequest
 
 class PedidoService:
     @staticmethod
