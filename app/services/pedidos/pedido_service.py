@@ -20,19 +20,17 @@ class PedidoService:
         Retorna a lista de pedidos filtrados e ordena, imitando a lógica central do portal.
         Também retorna os valores únicos para os dropdowns de filtro.
         """
-        # 1. Busca filtros disponíveis
+        # 1. Busca filtros disponíveis (Todas as opções possíveis para Unidades/Serviços, mas em uso para Status/Urgência)
         lista_status = db.execute(select(distinct(PedidoServico.StatusPedido)).where(PedidoServico.StatusPedido != None)).scalars().all()
         lista_urgencia = db.execute(select(distinct(PedidoServico.Urgencia)).where(PedidoServico.Urgencia != None)).scalars().all()
-        # 1. Busca de Filtros (Para popular os dropdowns)
-        
-        stmt_unidades = select(distinct(Unidade.NomeUnidade)).join(PedidoServico, PedidoServico.UnidadeID == Unidade.UnidadeID)
+
+        stmt_unidades = select(distinct(Unidade.NomeUnidade)).order_by(Unidade.NomeUnidade.asc())
         lista_unidades = db.execute(stmt_unidades).scalars().all() 
 
-        stmt_tipos_servicos = select(distinct(CatalogoServico.Nome)).join(PedidoServico, PedidoServico.TipoServicoID == CatalogoServico.ServicoID)
+        stmt_tipos_servicos = select(distinct(CatalogoServico.Nome)).order_by(CatalogoServico.Nome.asc())
         lista_tipos_servicos = db.execute(stmt_tipos_servicos).scalars().all() 
 
-        stmt_blocos = select(distinct(PedidoServico.Bloco)).where(PedidoServico.Bloco != None)
-        lista_blocos = db.execute(stmt_blocos).scalars().all()
+        lista_blocos = ["Bloco A", "Bloco B", "Bloco C", "Bloco D"]
 
         # 2. Query Principal de Pedidos
         stmt = (
