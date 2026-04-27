@@ -1,3 +1,5 @@
+from app.models import ParceiroVeiculo
+from app.models import PedidoServico
 from app.core.database import DatabaseManager
 import uuid
 import random
@@ -173,8 +175,8 @@ class ParceiroService:
         # Query direta na tabela base, sem dependência de Views
         stmt = select(ParceiroPerfil).options(
             selectinload(ParceiroPerfil.habilidades).joinedload(ParceiroHabilidade.servico_ref),
-            selectinload(ParceiroPerfil.veiculos).joinedload('tipo_veiculo'),
-            selectinload(ParceiroPerfil.pedidos_alocados),
+            selectinload(ParceiroPerfil.veiculos).joinedload(ParceiroVeiculo.tipo_veiculo),
+            selectinload(ParceiroPerfil.pedidos_alocados).joinedload(PedidoServico.tipo_servico_ref),
             defer(ParceiroPerfil.Geo_Base)
         )
 

@@ -244,6 +244,7 @@ class ParceiroHabilidade(Base):
 
     # Relacionamentos
     parceiro: Mapped['ParceiroPerfil'] = relationship(back_populates='habilidades')
+    servico_ref: Mapped['CatalogoServico'] = relationship()
 
 
 class TipoVeiculo(Base):
@@ -253,7 +254,7 @@ class TipoVeiculo(Base):
     NomeVeiculo: Mapped[str] = mapped_column(String(50), nullable=False)
 
     # Relacionamentos
-    veiculos: Mapped[List['ParceiroVeiculo']] = relationship(back_populates='tipo_veiculo')
+    veiculos_registrados: Mapped[List['ParceiroVeiculo']] = relationship(back_populates='tipo_veiculo')
 
 
 class ParceiroVeiculo(Base):
@@ -267,7 +268,7 @@ class ParceiroVeiculo(Base):
 
     # Relacionamentos
     parceiro: Mapped['ParceiroPerfil'] = relationship(back_populates='veiculos')
-    tipo_veiculo: Mapped['TipoVeiculo'] = relationship(back_populates='veiculos')
+    tipo_veiculo: Mapped['TipoVeiculo'] = relationship(back_populates='veiculos_registrados')
 
 # ============================================================================
 # MODELOS DE PEDIDOS E OPERAÇÃO
