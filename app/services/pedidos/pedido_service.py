@@ -91,7 +91,6 @@ class PedidoService:
             
         return {
             "pedidos": pedidos_formatados,
-            "total": len(pedidos_formatados),
             "filtros_disponiveis": {
                 "lista_status": lista_status,
                 "lista_urgencias": lista_urgencia,
