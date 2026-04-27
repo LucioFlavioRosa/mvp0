@@ -167,25 +167,32 @@ class ParceiroService:
     @staticmethod
     def listar_parceiros(db_session, filtros: dict) -> dict:
         from sqlalchemy import select
-        from app.models import VwParceiroDetalhado
-        
-        query = select(VwParceiroDetalhado)
-        
+        from sqlalchemy.orm import selectinload, joinedload, defer
+        from app.models import ParceiroPerfil, ParceiroHabilidade
+
+        # Query direta na tabela base, sem dependência de Views
+        stmt = select(ParceiroPerfil).options(
+            selectinload(ParceiroPerfil.habilidades).joinedload(ParceiroHabilidade.servico_ref),
+            selectinload(ParceiroPerfil.veiculos).joinedload('tipo_veiculo'),
+            selectinload(ParceiroPerfil.pedidos_alocados),
+            defer(ParceiroPerfil.Geo_Base)
+        )
+
+        # Filtros aplicados diretamente no banco
         if filtros.get("status"):
-            query = query.where(VwParceiroDetalhado.StatusAtual == filtros["status"])
+            stmt = stmt.where(ParceiroPerfil.StatusAtual == filtros["status"])
         if filtros.get("cidade"):
-            query = query.where(VwParceiroDetalhado.Cidade == filtros["cidade"])
+            stmt = stmt.where(ParceiroPerfil.Cidade == filtros["cidade"])
         if filtros.get("nome"):
-            query = query.where(VwParceiroDetalhado.NomeCompleto.ilike(f"%{filtros['nome']}%"))
-            
-        parceiros_obj = db_session.execute(query).scalars().all()
-        
+            stmt = stmt.where(ParceiroPerfil.NomeCompleto.ilike(f"%{filtros['nome']}%"))
+
+        parceiros_obj = db_session.execute(stmt).scalars().all()
+
         total_ativos = 0
         total_analise = 0
-        
         cidades_set = set()
         parceiros_list = []
-        
+
         for p in parceiros_obj:
             status = p.StatusAtual or ""
             if status.upper() == "ATIVO":
@@ -197,29 +204,41 @@ class ParceiroService:
                 cidades_set.add(p.Cidade)
 
             tipo_doc, doc_formatado = ParceiroService._formatar_documento(p.CPF, p.CNPJ)
+            uuid_str = str(p.ParceiroUUID)
+
+            # Habilidades: Lista de nomes e string de IDs (em memória via selectinload)
+            nomes_habilidades = [h.servico_ref.Nome for h in p.habilidades if h.servico_ref]
+            ids_habilidades = ",".join([str(h.TipoServicoID) for h in p.habilidades])
+
+            # Veículos: String descritiva (em memória via selectinload)
+            veiculos_str = ", ".join([
+                v.tipo_veiculo.NomeVeiculo for v in p.veiculos if v.tipo_veiculo and v.Ativo
+            ]) or None
+
+            # Total de ordens concluídas (calculado em Python com len(), sem query extra)
+            total_concluidas = len([o for o in p.pedidos_alocados if o.StatusPedido == 'CONCLUIDO'])
 
             parceiros_list.append({
-                "ParceiroUUID": str(p.ParceiroUUID),
+                "ParceiroUUID": uuid_str,
                 "NomeCompleto": p.NomeCompleto,
                 "Cidade": p.Cidade,
                 "Bairro": p.Bairro,
-                "FotoUrl": f"https://staegeadocscaddevusc.blob.core.windows.net/selfie/{str(p.ParceiroUUID).upper().strip()}/selfie.jpg",
-                "TelefoneFormatado": ParceiroService._formatar_telefone(p.Telefone),
+                "FotoUrl": f"https://staegeadocscaddevusc.blob.core.windows.net/selfie/{uuid_str.upper()}/selfie.jpg",
+                "TelefoneFormatado": ParceiroService._formatar_telefone(p.WhatsAppID),
                 "TipoDocumento": tipo_doc,
                 "DocumentoFormatado": doc_formatado,
-                "HabilidadesList": ParceiroService._resolver_habilidades(db_session, p.HabIDs),
+                "HabilidadesList": nomes_habilidades,
                 "RaioAtuacao": p.DistanciaMaximaKm or 0,
                 "StatusAtual": p.StatusAtual,
                 "StatusLabel": ParceiroService._formatar_status(p.StatusAtual),
-                "Veiculos": p.Veiculos,
-                "HabIDs": p.HabIDs,
-                "TotalOrdensConcluidas": p.TotalOrdensConcluidas,
-                "AvaliacaoMedia": p.AvaliacaoMedia
+                "Veiculos": veiculos_str,
+                "HabIDs": ids_habilidades,
+                "TotalOrdensConcluidas": total_concluidas,
             })
-            
+
         total_outros = len(parceiros_list) - total_ativos - total_analise
         cidades_lista = sorted(list(cidades_set))
-        
+
         return {
             "parceiros": parceiros_list,
             "total_ativos": total_ativos,
@@ -227,6 +246,7 @@ class ParceiroService:
             "total_outros": total_outros,
             "cidades": cidades_lista
         }
+
 
     @staticmethod
     def obter_detalhes_parceiro(db_session, parceiro_uuid: str) -> dict:

@@ -23,7 +23,6 @@ class ParceiroResumoResponse(BaseModel):
     Veiculos: Optional[str]
     HabIDs: Optional[str]
     TotalOrdensConcluidas: Optional[int]
-    AvaliacaoMedia: Optional[float]
 
     class Config:
         from_attributes = True
