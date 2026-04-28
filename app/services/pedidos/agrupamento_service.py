@@ -117,24 +117,37 @@ class AgrupamentoService:
             .having(func.count(distinct(ParceiroHabilidade.TipoServicoID)) == total_necessario)
         )
 
+        # Usamos STAsText() para extrair as coordenadas da coluna Geography do SQL Server
         stmt_parceiros = (
-            select(ParceiroPerfil)
+            select(
+                ParceiroPerfil,
+                func.STAsText(ParceiroPerfil.Geo_Base).label("wkt")
+            )
             .where(
                 ParceiroPerfil.ParceiroUUID.in_(subq_compativeis),
                 ParceiroPerfil.StatusAtual == "ATIVO",
-                ParceiroPerfil.Lat.is_not(None),
-                ParceiroPerfil.Lng.is_not(None),
+                ParceiroPerfil.Geo_Base.is_not(None)
             )
         )
 
-        parceiros_db = db.execute(stmt_parceiros).scalars().all()
+        parceiros_db = db.execute(stmt_parceiros).all()
 
         # --- 5. Formata parceiros e calcula distância ao centroide ---
         parceiros_formatados = []
-        for p in parceiros_db:
+        for row in parceiros_db:
+            p = row[0]   # Objeto ParceiroPerfil
+            wkt = row[1]  # String "POINT (long lat)"
+            
             uuid_str = str(p.ParceiroUUID)
-            p_lat = float(p.Lat)
-            p_lng = float(p.Lng)
+            
+            # Extrai lat/long do WKT: Ex "POINT (-48.5022 -1.4558)"
+            try:
+                # O SQL Server retorna POINT (LONG LAT)
+                coords = wkt.replace("POINT (", "").replace(")", "").split()
+                p_lng = float(coords[0])
+                p_lat = float(coords[1])
+            except Exception:
+                p_lat, p_lng = _LAT_FALLBACK, _LNG_FALLBACK
 
             try:
                 distancia = round(
