@@ -117,16 +117,19 @@ class AgrupamentoService:
             .having(func.count(distinct(ParceiroHabilidade.TipoServicoID)) == total_necessario)
         )
 
-        # Usamos STAsText() para extrair as coordenadas da coluna Geography do SQL Server
+        # Importamos literal_column para acessar propriedades .Lat e .Long do tipo Geography no SQL Server
+        from sqlalchemy import literal_column
+        from app.services.infra.geocoding_service import GeocodingService
+
         stmt_parceiros = (
             select(
                 ParceiroPerfil,
-                func.STAsText(ParceiroPerfil.Geo_Base).label("wkt")
+                literal_column("Geo_Base.Lat").label("lat_val"),
+                literal_column("Geo_Base.Long").label("lng_val")
             )
             .where(
                 ParceiroPerfil.ParceiroUUID.in_(subq_compativeis),
-                ParceiroPerfil.StatusAtual == "ATIVO",
-                ParceiroPerfil.Geo_Base.is_not(None)
+                ParceiroPerfil.StatusAtual == "ATIVO"
             )
         )
 
@@ -135,18 +138,28 @@ class AgrupamentoService:
         # --- 5. Formata parceiros e calcula distância ao centroide ---
         parceiros_formatados = []
         for row in parceiros_db:
-            p = row[0]   # Objeto ParceiroPerfil
-            wkt = row[1]  # String "POINT (long lat)"
+            p = row[0]       # Objeto ParceiroPerfil
+            p_lat = row[1]   # Latitude extraída pelo banco (pode ser None)
+            p_lng = row[2]   # Longitude extraída pelo banco (pode ser None)
             
             uuid_str = str(p.ParceiroUUID)
             
-            # Extrai lat/long do WKT: Ex "POINT (-48.5022 -1.4558)"
-            try:
-                # O SQL Server retorna POINT (LONG LAT)
-                coords = wkt.replace("POINT (", "").replace(")", "").split()
-                p_lng = float(coords[0])
-                p_lat = float(coords[1])
-            except Exception:
+            # Fallback: Se o parceiro não tem Geo_Base, tenta geocodificar pelo endereço
+            if p_lat is None or p_lng is None:
+                try:
+                    p_lat_geo, p_lng_geo = GeocodingService.geocodificar_endereco(
+                        rua=p.Rua,
+                        numero=str(p.Numero) if p.Numero else "S/N",
+                        bairro=p.Bairro,
+                        cidade=p.Cidade
+                    )
+                    if p_lat_geo is not None:
+                        p_lat, p_lng = p_lat_geo, p_lng_geo
+                except Exception as e:
+                    print(f"⚠️ Erro ao tentar geocodificar parceiro {uuid_str}: {e}")
+
+            # Se falhou tanto o banco quanto a geocodificação, usa o fallback padrão
+            if p_lat is None or p_lng is None:
                 p_lat, p_lng = _LAT_FALLBACK, _LNG_FALLBACK
 
             try:
