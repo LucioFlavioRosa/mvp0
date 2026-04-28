@@ -12,6 +12,7 @@ from app.routes import servicos as route_servicos
 from app.routes import parceiros as route_parceiros
 from app.routes import backoffice as route_backoffice
 from app.routes import agrupamentos as route_agrupamentos
+from app.routes import estrutural as route_estrutural
 
 # ==============================================================================
 # 1. INICIALIZAÇÃO
@@ -65,3 +66,6 @@ app.include_router(route_backoffice.router, prefix="/api/backoffice", tags=["Bac
 
 # Rotas de Agrupamentos -> Match coletivo e disparo em lote
 app.include_router(route_agrupamentos.router, prefix="/api/agrupamentos", tags=["Agrupamentos"])
+
+# Rotas Estruturais Admin -> CRUD de Empresas, Filiais e Unidades
+app.include_router(route_estrutural.router, prefix="/api/estrutural", tags=["Estrutural"])
