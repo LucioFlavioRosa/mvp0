@@ -121,12 +121,15 @@ class AgrupamentoService:
         from sqlalchemy import literal_column
         from app.services.infra.geocoding_service import GeocodingService
 
+        from sqlalchemy.orm import defer
+
         stmt_parceiros = (
             select(
                 ParceiroPerfil,
                 literal_column("Geo_Base.Lat").label("lat_val"),
                 literal_column("Geo_Base.Long").label("lng_val")
             )
+            .options(defer(ParceiroPerfil.Geo_Base))  # Ignora a coluna binária que causa erro no pyodbc
             .where(
                 ParceiroPerfil.ParceiroUUID.in_(subq_compativeis),
                 ParceiroPerfil.StatusAtual == "ATIVO"
