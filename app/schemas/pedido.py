@@ -45,7 +45,7 @@ class PedidoResponse(BaseModel):
     Valor: Optional[float]
     Lat: Optional[float]
     Lng: Optional[float]
-    PrazoConclusaoOS: Optional[str] 
+    PrazoConclusaoOS: Optional[datetime] 
     Atividade: str 
     TempoMedio: Optional[float] 
     UnidadeNome: Optional[str] 

@@ -82,7 +82,7 @@ class PedidoService:
             p_dict['TempoMedio'] = p.tipo_servico_ref.TempoMedioExecucao if p.tipo_servico_ref else 0.0
             p_dict['Atividade'] = p.tipo_servico_ref.Nome if p.tipo_servico_ref else "Serviço Não Encontrado"
             p_dict['UnidadeNome'] = p.unidade_obj.NomeUnidade if p.unidade_obj else None
-            p_dict['PrazoConclusaoOS'] = p.PrazoConclusaoOS.strftime('%d/%m/%Y %H:%M') if p.PrazoConclusaoOS else ""
+            p_dict['PrazoConclusaoOS'] = p.PrazoConclusaoOS if p.PrazoConclusaoOS else None
             pedidos_formatados.append(p_dict)
             
         return {
@@ -127,7 +127,7 @@ class PedidoService:
                 pedido['Atividade'] = pedido_obj.tipo_servico_ref.Nome if pedido_obj.tipo_servico_ref else "Serviço Não Informado"
                 
                 # Formatação de campos
-                pedido['PrazoConclusaoOS'] = pedido_obj.PrazoConclusaoOS.strftime('%d/%m/%Y-%H:%M') if pedido_obj.PrazoConclusaoOS else ""
+                pedido['PrazoConclusaoOS'] = pedido_obj.PrazoConclusaoOS if pedido_obj.PrazoConclusaoOS else None
 
                 status = pedido['StatusPedido'] if pedido['StatusPedido'] else 'Aguardando'
                 
