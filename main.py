@@ -9,6 +9,7 @@ from app.routes import pedidos as route_pedidos
 from app.routes import chatbot as route_chatbot
 from app.routes import unidades as route_unidades
 from app.routes import servicos as route_servicos
+from app.routes import materiais as route_materiais
 from app.routes import parceiros as route_parceiros
 from app.routes import backoffice as route_backoffice
 from app.routes import agrupamentos as route_agrupamentos
@@ -69,3 +70,6 @@ app.include_router(route_agrupamentos.router, prefix="/api/agrupamentos", tags=[
 
 # Rotas Estruturais Admin -> CRUD de Empresas, Filiais e Unidades
 app.include_router(route_estrutural.router, prefix="/api/estrutural", tags=["Estrutural"])
+
+# Rotas de Materiais -> Catálogo de materiais
+app.include_router(route_materiais.router, prefix="/api/materiais", tags=["Materiais"])
