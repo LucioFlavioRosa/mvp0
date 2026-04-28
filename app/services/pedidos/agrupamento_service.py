@@ -119,9 +119,9 @@ class AgrupamentoService:
 
         # Importamos literal_column para acessar propriedades .Lat e .Long do tipo Geography no SQL Server
         from sqlalchemy import literal_column
+        from sqlalchemy.orm import defer, selectinload, joinedload
         from app.services.infra.geocoding_service import GeocodingService
-
-        from sqlalchemy.orm import defer
+        from app.models import ParceiroVeiculo
 
         stmt_parceiros = (
             select(
@@ -129,7 +129,13 @@ class AgrupamentoService:
                 literal_column("Geo_Base.Lat").label("lat_val"),
                 literal_column("Geo_Base.Long").label("lng_val")
             )
-            .options(defer(ParceiroPerfil.Geo_Base))  # Ignora a coluna binária que causa erro no pyodbc
+            .options(
+                defer(ParceiroPerfil.Geo_Base),
+                selectinload(ParceiroPerfil.habilidades).joinedload(ParceiroHabilidade.servico_ref),
+                selectinload(ParceiroPerfil.veiculos).joinedload(ParceiroVeiculo.tipo_veiculo),
+                selectinload(ParceiroPerfil.pedidos_alocados),
+                selectinload(ParceiroPerfil.disponibilidades)
+            )
             .where(
                 ParceiroPerfil.ParceiroUUID.in_(subq_compativeis),
                 ParceiroPerfil.StatusAtual == "ATIVO"
@@ -172,16 +178,41 @@ class AgrupamentoService:
             except Exception:
                 distancia = 999.0
 
+            # Formatação de campos complexos reutilizando o ParceiroService
+            tipo_doc, doc_formatado = ParceiroService._formatar_documento(p.CPF, p.CNPJ)
+            nomes_hab = [h.servico_ref.Nome for h in p.habilidades if h.servico_ref]
+            veiculos_str = ", ".join([
+                v.tipo_veiculo.NomeVeiculo for v in p.veiculos if v.tipo_veiculo and v.Ativo
+            ]) or "Nenhum"
+            
+            disp_list = [
+                f"Dia {d.DiaSemana} - Período {d.Periodo}" 
+                for d in p.disponibilidades if d.Ativo
+            ]
+
+            endereco = f"{p.Rua or ''}, {p.Numero or 'S/N'} - {p.Bairro or ''}".strip(", -")
+
             parceiros_formatados.append({
                 "ParceiroUUID": uuid_str,
                 "NomeCompleto": p.NomeCompleto,
                 "Cidade": p.Cidade,
+                "Bairro": p.Bairro,
                 "TelefoneFormatado": ParceiroService._formatar_telefone(p.WhatsAppID),
+                "Email": p.Email,
                 "FotoUrl": f"https://staegeadocscaddevusc.blob.core.windows.net/selfie/{uuid_str.upper()}/selfie.jpg",
                 "StatusAtual": p.StatusAtual,
+                "StatusLabel": ParceiroService._formatar_status(p.StatusAtual),
                 "Lat": p_lat,
                 "Lon": p_lng,
                 "distancia": distancia,
+                "Veiculos": veiculos_str,
+                "HabilidadesList": nomes_hab,
+                "TipoDocumento": tipo_doc,
+                "DocumentoFormatado": doc_formatado,
+                "EnderecoCompleto": endereco,
+                "DistanciaMaximaKm": p.DistanciaMaximaKm,
+                "TotalOrdensConcluidas": len([o for o in p.pedidos_alocados if o.StatusPedido == 'CONCLUIDO']),
+                "DisponibilidadeList": disp_list
             })
 
         # Ordena por proximidade ao centroide

@@ -35,16 +35,29 @@ class PedidoAgrupamentoItem(BaseModel):
 
 
 class ParceiroAgrupamentoItem(BaseModel):
-    """Dados de um parceiro compatível com o lote."""
+    """Dados de um parceiro compatível com o lote, incluindo detalhes para o modal."""
     ParceiroUUID: str
     NomeCompleto: Optional[str]
     Cidade: Optional[str]
+    Bairro: Optional[str]
     TelefoneFormatado: Optional[str]
     FotoUrl: Optional[str]
     StatusAtual: Optional[str]
+    StatusLabel: Optional[str]
     Lat: Optional[float]
     Lon: Optional[float]
     distancia: Optional[float]  # km até o centroide do agrupamento
+
+    # Campos extras para o Modal de Perfil no Portal
+    Veiculos: Optional[str]
+    HabilidadesList: List[str] = []
+    Email: Optional[str]
+    TipoDocumento: Optional[str]
+    DocumentoFormatado: Optional[str]
+    EnderecoCompleto: Optional[str]
+    DistanciaMaximaKm: Optional[float]
+    TotalOrdensConcluidas: int = 0
+    DisponibilidadeList: List[str] = []
 
     class Config:
         from_attributes = True
