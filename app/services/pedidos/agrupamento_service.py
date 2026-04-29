@@ -11,16 +11,19 @@ import uuid
 from datetime import datetime
 from typing import List
 
-from sqlalchemy.orm import Session
-from sqlalchemy import select, func, distinct
+from sqlalchemy.orm import Session, joinedload, selectinload, defer
+from sqlalchemy import select, func, distinct, literal_column
+from geopy.distance import geodesic
 
 from app.models import (
     PedidoServico,
     ParceiroPerfil,
     ParceiroHabilidade,
+    ParceiroVeiculo
 )
 from app.services.pedidos.dispatch_service import DispatchService
 from app.services.parceiros.parceiro_service import ParceiroService
+from app.services.infra.geocoding_service import GeocodingService
 
 
 # Coordenadas de fallback (Belém-PA) para pedidos sem georreferenciamento
@@ -45,9 +48,6 @@ class AgrupamentoService:
             (group_by + having count == total de serviços únicos).
           - Calcula a distância geodésica de cada parceiro ao centroide do agrupamento.
         """
-        from sqlalchemy.orm import joinedload
-        from geopy.distance import geodesic
-
         # --- 1. Valida e converte IDs ---
         uuids_validos = []
         for pid in id_pedidos:
@@ -95,8 +95,8 @@ class AgrupamentoService:
                 "Numero": p.Numero,
                 "Bairro": p.Bairro,
                 "Cidade": p.Cidade,
-                "PrazoConclusaoOS": p.PrazoConclusaoOS.strftime("%d/%m/%Y %H:%M") if p.PrazoConclusaoOS else "",
-                "TempoMedio": str(p.tipo_servico_ref.TempoMedioExecucao) if p.tipo_servico_ref and p.tipo_servico_ref.TempoMedioExecucao else "Não informado",
+                "PrazoConclusaoOS": p.PrazoConclusaoOS,
+                "TempoMedio": p.tipo_servico_ref.TempoMedioExecucao if p.tipo_servico_ref else None,
                 "Urgencia": p.Urgencia,
                 "StatusPedido": p.StatusPedido,
                 "Lat": lat,
@@ -116,12 +116,6 @@ class AgrupamentoService:
             .group_by(ParceiroHabilidade.ParceiroUUID)
             .having(func.count(distinct(ParceiroHabilidade.TipoServicoID)) == total_necessario)
         )
-
-        # Importamos literal_column para acessar propriedades .Lat e .Long do tipo Geography no SQL Server
-        from sqlalchemy import literal_column
-        from sqlalchemy.orm import defer, selectinload, joinedload
-        from app.services.infra.geocoding_service import GeocodingService
-        from app.models import ParceiroVeiculo
 
         stmt_parceiros = (
             select(
@@ -176,7 +170,7 @@ class AgrupamentoService:
                     geodesic((p_lat, p_lng), (centro_lat, centro_lng)).kilometers, 2
                 )
             except Exception:
-                distancia = 999.0
+                distancia = None
 
             # Formatação de campos complexos reutilizando o ParceiroService
             tipo_doc, doc_formatado = ParceiroService._formatar_documento(p.CPF, p.CNPJ)
@@ -186,22 +180,21 @@ class AgrupamentoService:
             ]) or "Nenhum"
             
             disp_list = [
-                f"Dia {d.DiaSemana} - Período {d.Periodo}" 
+                {"dia_id": d.DiaSemana, "periodo_id": d.Periodo}
                 for d in p.disponibilidades if d.Ativo
             ]
-
-            endereco = f"{p.Rua or ''}, {p.Numero or 'S/N'} - {p.Bairro or ''}".strip(", -")
 
             parceiros_formatados.append({
                 "ParceiroUUID": uuid_str,
                 "NomeCompleto": p.NomeCompleto,
                 "Cidade": p.Cidade,
                 "Bairro": p.Bairro,
+                "Rua": p.Rua,
+                "Numero": str(p.Numero) if p.Numero else "S/N",
                 "TelefoneFormatado": ParceiroService._formatar_telefone(p.WhatsAppID),
                 "Email": p.Email,
                 "FotoUrl": f"https://staegeadocscaddevusc.blob.core.windows.net/selfie/{uuid_str.upper()}/selfie.jpg",
-                "StatusAtual": p.StatusAtual,
-                "StatusLabel": ParceiroService._formatar_status(p.StatusAtual),
+                "StatusAtual": p.StatusAtual or 'ATIVO',
                 "Lat": p_lat,
                 "Lon": p_lng,
                 "distancia": distancia,
@@ -209,14 +202,13 @@ class AgrupamentoService:
                 "HabilidadesList": nomes_hab,
                 "TipoDocumento": tipo_doc,
                 "DocumentoFormatado": doc_formatado,
-                "EnderecoCompleto": endereco,
                 "DistanciaMaximaKm": p.DistanciaMaximaKm,
                 "TotalOrdensConcluidas": len([o for o in p.pedidos_alocados if o.StatusPedido == 'CONCLUIDO']),
                 "DisponibilidadeList": disp_list
             })
 
         # Ordena por proximidade ao centroide
-        parceiros_formatados.sort(key=lambda x: x["distancia"])
+        parceiros_formatados.sort(key=lambda x: x["distancia"] if x["distancia"] is not None else 9999)
 
         return {
             "pedidos": pedidos_formatados,

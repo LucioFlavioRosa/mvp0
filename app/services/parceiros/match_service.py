@@ -1,20 +1,8 @@
-from sqlalchemy.orm import Session
-from sqlalchemy import select
+from sqlalchemy.orm import Session, selectinload, defer
+from sqlalchemy import select, literal_column
 from geopy.distance import geodesic
-
-from app.models import VwParceiroDetalhado, CatalogoServico
-from app.schemas.pedido import formatar_telefone, formatar_documento, gerar_url_foto
-
-
-# Mapeamentos fixos de formatação
-_STATUS_DESC = {
-    'ATIVO': {'label': 'Ativo', 'color': 'success'},
-    'INATIVO': {'label': 'Inativo', 'color': 'danger'},
-    'EM_ANALISE': {'label': 'Em Análise', 'color': 'warning'},
-    'SUSPENSO': {'label': 'Suspenso', 'color': 'danger'},
-}
-_DIAS_DESC = {0: 'Seg', 1: 'Ter', 2: 'Qua', 3: 'Qui', 4: 'Sex', 5: 'Sáb', 6: 'Dom'}
-_PERIODOS_DESC = {1: 'Manhã', 2: 'Tarde', 3: 'Noite'}
+from app.models import ParceiroPerfil, ParceiroHabilidade, ParceiroVeiculo, ParceiroDisponibilidade
+from app.services.parceiros.parceiro_service import ParceiroService
 
 # Coordenadas de fallback (Belém-PA)
 _LAT_FALLBACK = -1.4558
@@ -29,98 +17,74 @@ class MatchParceiroService:
         lat_referencia: float = _LAT_FALLBACK,
         lng_referencia: float = _LNG_FALLBACK,
     ) -> list:
-        """
-        Retorna a lista de parceiros aptos para um determinado serviço,
-        ordenados por distância em relação ao ponto de referência.
-
-        Passos:
-          1. Busca parceiros aptos via VW_PARCEIRO_DETALHADO filtrado por HabIDs.
-          2. Calcula a distância geodésica (geopy) de cada parceiro ao ponto de referência.
-          3. Enriquece os dados (telefone, documento, habilidades, disponibilidade).
-          4. Ordena por distância (ascendente).
-        """
-        ts_id_str = str(servico_id)
-
-        # 1. Buscar parceiros aptos para o serviço (via coluna HabIDs da View)
-        stmt = (
-            select(VwParceiroDetalhado)
-            .where(VwParceiroDetalhado.HabIDs.contains(ts_id_str))
+        # 1. Buscar parceiros aptos para o serviço usando SQLAlchemy
+        base_stmt = (
+            select(
+                ParceiroPerfil,
+                literal_column("Geo_Base.Lat").label("lat_val"),
+                literal_column("Geo_Base.Long").label("lng_val")
+            )
+            .options(
+                defer(ParceiroPerfil.Geo_Base),
+                selectinload(ParceiroPerfil.habilidades).joinedload(ParceiroHabilidade.servico_ref),
+                selectinload(ParceiroPerfil.disponibilidades)
+            )
         )
-        parceiros_obj = db.execute(stmt).scalars().all()
-        parceiros = [p.to_dict() for p in parceiros_obj]
 
-        # 2. Carregar catálogo de serviços para tradução de habilidades
-        cat_result = db.execute(select(CatalogoServico.ServicoID, CatalogoServico.Nome)).all()
-        catalogo_desc = {r.ServicoID: r.Nome for r in cat_result}
+        stmt = (
+            base_stmt
+            .join(ParceiroPerfil.habilidades)
+            .where(
+                ParceiroHabilidade.TipoServicoID == servico_id,
+                ParceiroPerfil.StatusAtual == 'ATIVO'
+            )
+        )
+        
+        parceiros_db = db.execute(stmt).all()
+        parceiros_final = []
 
-        # 3. Enriquecer cada parceiro
-        for p in parceiros:
-            # Distância geodésica
-            if p.get('Lat') and p.get('Lon'):
+        for row in parceiros_db:
+            p = row[0]       # ParceiroPerfil
+            p_lat = row[1]   # Latitude do banco
+            p_lng = row[2]   # Longitude do banco
+            uuid_str = str(p.ParceiroUUID)
+
+            # Distancia
+            distancia = None
+            if p_lat is not None and p_lng is not None:
                 try:
-                    p['distancia'] = round(
-                        geodesic(
-                            (float(p['Lat']), float(p['Lon'])),
-                            (lat_referencia, lng_referencia)
-                        ).kilometers, 2
-                    )
+                    distancia = round(geodesic((p_lat, p_lng), (lat_referencia, lng_referencia)).kilometers, 2)
                 except Exception:
-                    p['distancia'] = 999.0
-            else:
-                p['distancia'] = 999.0
+                    pass
 
-            # Foto
-            p['FotoUrl'] = gerar_url_foto(p.get('ParceiroUUID', ''))
-
-            # Telefone
-            telefone = p.get('Telefone', '') or ''
-            if not telefone and p.get('WhatsAppID'):
-                whats_id = str(p.get('WhatsAppID', ''))
-                telefone = (
-                    whats_id.replace('whatsapp:+55', '')
-                             .replace('whatsapp:+', '')
-                             .replace('whatsapp:', '')
-                )
-            p['TelefoneFormatado'] = formatar_telefone(telefone)
-
-            # Documento
-            if p.get('CNPJ'):
-                p['DocumentoFormatado'] = formatar_documento(p.get('CNPJ'))
-                p['TipoDocumento'] = 'CNPJ'
-            else:
-                p['DocumentoFormatado'] = formatar_documento(p.get('CPF'))
-                p['TipoDocumento'] = 'CPF'
-
-            # Status
-            status_p = p.get('StatusAtual', 'ATIVO') or 'ATIVO'
-            status_info = _STATUS_DESC.get(status_p, _STATUS_DESC['ATIVO'])
-            p['StatusLabel'] = status_info['label']
-            p['StatusColor'] = status_info['color']
-
-            # Habilidades
-            habs = [
-                catalogo_desc.get(int(x), f"Serviço {x}")
-                for x in p.get('HabIDs', '').split(',') if x
-            ]
-            p['HabilidadesDesc'] = ", ".join(habs) if habs else "Não informado"
-            p['HabilidadesList'] = habs
-
-            # Disponibilidade
+            # Formatações via ParceiroService
+            tipo_doc, doc_formatado = ParceiroService._formatar_documento(p.CPF, p.CNPJ)
+            nomes_hab = [h.servico_ref.Nome for h in p.habilidades if h.servico_ref]
+            
             disp_list = []
-            if p.get('DispRaw'):
-                for item in p['DispRaw'].split('|'):
-                    try:
-                        dia_id, per_id = map(int, item.split(':'))
-                        disp_list.append({
-                            'dia': _DIAS_DESC.get(dia_id, 'N/A'),
-                            'periodo': _PERIODOS_DESC.get(per_id, 'N/A'),
-                            'texto': f"{_DIAS_DESC.get(dia_id, 'N/A')} ({_PERIODOS_DESC.get(per_id, 'N/A')})",
-                        })
-                    except Exception:
-                        pass
-            p['DisponibilidadeDesc'] = disp_list
+            for d in p.disponibilidades:
+                if d.Ativo:
+                    disp_list.append({
+                        "dia_id": d.DiaSemana,
+                        "periodo_id": d.Periodo
+                    })
+
+            parceiros_final.append({
+                "ParceiroUUID": uuid_str,
+                "NomeCompleto": p.NomeCompleto,
+                "TelefoneFormatado": ParceiroService._formatar_telefone(p.WhatsAppID),
+                "FotoUrl": f"https://staegeadocscaddevusc.blob.core.windows.net/selfie/{uuid_str.upper()}/selfie.jpg",
+                "StatusAtual": p.StatusAtual or 'ATIVO',
+                "Lat": p_lat,
+                "Lon": p_lng,
+                "distancia": distancia,
+                "HabilidadesList": nomes_hab,
+                "TipoDocumento": tipo_doc,
+                "DocumentoFormatado": doc_formatado,
+                "DisponibilidadeList": disp_list,
+            })
 
         # 4. Ordenar por distância
-        parceiros.sort(key=lambda p: p.get('distancia', 999.0))
+        parceiros_final.sort(key=lambda x: x['distancia'] if x['distancia'] is not None else 9999)
 
-        return parceiros
+        return parceiros_final
