@@ -7,7 +7,8 @@ Define os contratos de dados para:
   - Resposta do disparo em lote
 """
 
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
+from datetime import datetime
 from pydantic import BaseModel
 
 
@@ -23,8 +24,8 @@ class PedidoAgrupamentoItem(BaseModel):
     Numero: Optional[str]
     Bairro: Optional[str]
     Cidade: Optional[str]
-    PrazoConclusaoOS: Optional[str]   # Formatado: dd/mm/yyyy HH:MM
-    TempoMedio: Optional[str]
+    PrazoConclusaoOS: Optional[datetime] = None
+    TempoMedio: Optional[float] = None
     Urgencia: Optional[str]
     StatusPedido: str
     Lat: float
@@ -43,21 +44,23 @@ class ParceiroAgrupamentoItem(BaseModel):
     TelefoneFormatado: Optional[str]
     FotoUrl: Optional[str]
     StatusAtual: Optional[str]
-    StatusLabel: Optional[str]
+    StatusLabel: Optional[str] = None
     Lat: Optional[float]
     Lon: Optional[float]
     distancia: Optional[float]  # km até o centroide do agrupamento
 
     # Campos extras para o Modal de Perfil no Portal
+    Rua: Optional[str] = None
+    Numero: Optional[str] = None
     Veiculos: Optional[str]
     HabilidadesList: List[str] = []
     Email: Optional[str]
     TipoDocumento: Optional[str]
     DocumentoFormatado: Optional[str]
-    EnderecoCompleto: Optional[str]
+    EnderecoCompleto: Optional[str] = None
     DistanciaMaximaKm: Optional[float]
     TotalOrdensConcluidas: int = 0
-    DisponibilidadeList: List[str] = []
+    DisponibilidadeList: List[Dict[str, Any]] = []
 
     class Config:
         from_attributes = True
