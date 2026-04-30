@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
+import traceback
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -17,8 +18,6 @@ async def list_unidades(db: Session = Depends(get_db)):
     try:
         return UnidadeService.listar_todas(db)
     except Exception as e:
-        from fastapi import HTTPException
-        import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail="Erro ao buscar unidades")
 
@@ -32,7 +31,5 @@ async def list_servicos_unidade(unidade_id: int, db: Session = Depends(get_db)):
     try:
         return UnidadeService.listar_servicos_unidade(db, unidade_id)
     except Exception as e:
-        from fastapi import HTTPException
-        import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail="Erro ao buscar serviços da unidade")

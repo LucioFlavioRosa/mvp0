@@ -3,28 +3,8 @@ from typing import Optional, List
 from datetime import datetime
 import uuid
 import re
+from app.schemas.enums import StatusPedido, UrgenciaPedido, StatusParceiro
 
-# ============================================================================
-# UTILS (Formatação para Response)
-# ============================================================================
-def formatar_telefone(telefone: Optional[str]) -> str:
-    if not telefone: return "Não informado"
-    nums = re.sub(r'\D', '', str(telefone))
-    if len(nums) == 11: return f"({nums[:2]}) {nums[2:7]}-{nums[7:]}"
-    if len(nums) == 10: return f"({nums[:2]}) {nums[2:6]}-{nums[6:]}"
-    return telefone
-
-def formatar_documento(doc: Optional[str]) -> str:
-    if not doc: return "Não informado"
-    nums = re.sub(r'\D', '', str(doc))
-    if len(nums) == 11: return f"{nums[:3]}.{nums[3:6]}.{nums[6:9]}-{nums[9:]}"
-    if len(nums) == 14: return f"{nums[:2]}.{nums[2:5]}.{nums[5:8]}/{nums[8:12]}-{nums[12:]}"
-    return doc
-
-def gerar_url_foto(uuid_val) -> str:
-    if not uuid_val: return ""
-    uuid_str = str(uuid_val).upper().strip()
-    return f"https://staegeadocscaddevusc.blob.core.windows.net/selfie/{uuid_str}/selfie.jpg"
 
 # ============================================================================
 # SCHEMAS
@@ -33,8 +13,8 @@ class PedidoResponse(BaseModel):
     PedidoID: uuid.UUID
     TipoServicoID: int
     UnidadeID: Optional[int]
-    StatusPedido: Optional[str]
-    Urgencia: Optional[str]
+    StatusPedido: Optional[StatusPedido]
+    Urgencia: Optional[UrgenciaPedido]
     Bloco: Optional[str]
     CEP: Optional[str]
     Cidade: Optional[str]
@@ -73,14 +53,14 @@ class PedidoCreateRequest(BaseModel):
     NumeroOSSCAE: str
     DataAberturaSCAE: datetime
     PrazoConclusaoOS: datetime
-    Urgencia: str
+    Urgencia: UrgenciaPedido
     Observacao: Optional[str] = None
     Complemento: Optional[str] = None
     Valor: float
     Lat: Optional[float] = None
     Lng: Optional[float] = None
     ParceiroAlocadoUUID: Optional[uuid.UUID] = None
-    StatusPedido: Optional[str] = "AGUARDANDO"
+    StatusPedido: Optional[StatusPedido] = StatusPedido.AGUARDANDO
 
 class PedidoUpdateRequest(BaseModel):
     TipoServicoID: Optional[int] = None
@@ -95,14 +75,14 @@ class PedidoUpdateRequest(BaseModel):
     NumeroOSSCAE: Optional[str] = None
     DataAberturaSCAE: Optional[datetime] = None
     PrazoConclusaoOS: Optional[datetime] = None
-    Urgencia: Optional[str] = None
+    Urgencia: Optional[UrgenciaPedido] = None
     Observacao: Optional[str] = None
     Complemento: Optional[str] = None
     Valor: Optional[float] = None
     Lat: Optional[float] = None
     Lng: Optional[float] = None
     ParceiroAlocadoUUID: Optional[uuid.UUID] = None
-    StatusPedido: Optional[str] = None
+    StatusPedido: Optional[StatusPedido] = None
 
 class ParceiroDetalheResponse(BaseModel):
     ParceiroUUID: uuid.UUID
@@ -115,7 +95,7 @@ class ParceiroDetalheResponse(BaseModel):
     Documento: Optional[str]
     CPF: Optional[str]
     CNPJ: Optional[str]
-    StatusAtual: Optional[str]
+    StatusAtual: Optional[StatusParceiro]
     Lat: Optional[float]
     Lon: Optional[float]
     Veiculos: Optional[str]
@@ -142,8 +122,8 @@ class ParceiroDetalheResponse(BaseModel):
             Bairro=obj.Bairro,
             Cidade=obj.Cidade,
             CEP=obj.CEP,
-            Telefone=formatar_telefone(obj.Telefone),
-            Documento=formatar_documento(doc),
+            Telefone=obj.Telefone,
+            Documento=doc,
             CPF=obj.CPF,
             CNPJ=getattr(obj, 'CNPJ', None),
             StatusAtual=obj.StatusAtual,

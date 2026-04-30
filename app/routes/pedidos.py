@@ -1,12 +1,15 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.orm import Session
 from typing import Optional
 import traceback
 
 from app.core.database import get_db
 from app.core.auth import get_bff_token
-from app.schemas.pedido import PedidosListResponse
-from app.services.pedidos.pedido_service import PedidoService # Import ajustado
+from app.schemas.pedido import (
+    PedidosListResponse, DesvincularRequest, 
+    PedidoCreateRequest, PedidoUpdateRequest
+)
+from app.services.pedidos.pedido_service import PedidoService
 
 router = APIRouter()
 
@@ -43,10 +46,8 @@ async def get_pedido_detalhes(
     db: Session = Depends(get_db)
 ):
     """
-    Retorna os detalhes de um pedido específico, junto com a lista
     de parceiros qualificados (calculada a distância via geopy e formatada).
     """
-    from fastapi import HTTPException
     try:
         resultado = PedidoService.obter_pedido_detalhado(db, pedido_id)
         if not resultado:
@@ -58,7 +59,7 @@ async def get_pedido_detalhes(
         traceback.print_exc()
         raise HTTPException(status_code=500, detail="Erro interno ao buscar pedido")
 
-from app.schemas.pedido import DesvincularRequest, PedidoCreateRequest, PedidoUpdateRequest
+
 
 @router.post("", dependencies=[Depends(get_bff_token)])
 async def criar_pedido(
@@ -68,7 +69,6 @@ async def criar_pedido(
     """
     Cria uma nova Ordem de Serviço no Backend.
     """
-    from fastapi import HTTPException
     novo_pedido = PedidoService.criar_pedido(db, data)
     if not novo_pedido:
         raise HTTPException(status_code=400, detail="Erro ao criar a Ordem de Serviço.")
@@ -83,7 +83,6 @@ async def editar_pedido(
     """
     Atualiza campos específicos de uma Ordem de Serviço (PATCH).
     """
-    from fastapi import HTTPException
     pedido_atualizado = PedidoService.atualizar_pedido(db, pedido_id, data)
     if not pedido_atualizado:
         raise HTTPException(status_code=404, detail="Pedido não encontrado ou erro na atualização.")
@@ -98,7 +97,6 @@ async def desvincular_pedido(
     """
     Desvincula o parceiro alocado de um pedido e volta seu status para AGUARDANDO.
     """
-    from fastapi import HTTPException
     try:
         sucesso = PedidoService.desvincular_parceiro(db, pedido_id, data.mensagem)
         if not sucesso:

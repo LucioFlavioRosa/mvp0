@@ -23,6 +23,7 @@ from app.models import (
 )
 from app.services.pedidos.dispatch_service import DispatchService
 from app.services.parceiros.parceiro_service import ParceiroService
+from app.core.config import Settings
 from app.services.infra.geocoding_service import GeocodingService
 
 
@@ -165,12 +166,12 @@ class AgrupamentoService:
             if p_lat is None or p_lng is None:
                 p_lat, p_lng = _LAT_FALLBACK, _LNG_FALLBACK
 
-            try:
-                distancia = round(
-                    geodesic((p_lat, p_lng), (centro_lat, centro_lng)).kilometers, 2
-                )
-            except Exception:
-                distancia = None
+            distancia = None
+            if p_lat and p_lng and centro_lat and centro_lng:
+                try:
+                    distancia = round(geodesic((p_lat, p_lng), (centro_lat, centro_lng)).kilometers, 2)
+                except Exception:
+                    pass
 
             # Formatação de campos complexos reutilizando o ParceiroService
             tipo_doc, doc_formatado = ParceiroService._formatar_documento(p.CPF, p.CNPJ)
@@ -190,18 +191,18 @@ class AgrupamentoService:
                 "Cidade": p.Cidade,
                 "Bairro": p.Bairro,
                 "Rua": p.Rua,
-                "Numero": str(p.Numero) if p.Numero else "S/N",
-                "TelefoneFormatado": ParceiroService._formatar_telefone(p.WhatsAppID),
+                "Numero": p.Numero,
+                "Telefone": p.WhatsAppID,
                 "Email": p.Email,
-                "FotoUrl": f"https://staegeadocscaddevusc.blob.core.windows.net/selfie/{uuid_str.upper()}/selfie.jpg",
-                "StatusAtual": p.StatusAtual or 'ATIVO',
+                "FotoUrl": f"{Settings().BASE_STORAGE_URL}/{uuid_str.upper()}/selfie.jpg",
+                "StatusAtual": p.StatusAtual,
                 "Lat": p_lat,
                 "Lon": p_lng,
                 "distancia": distancia,
                 "Veiculos": veiculos_str,
                 "HabilidadesList": nomes_hab,
                 "TipoDocumento": tipo_doc,
-                "DocumentoFormatado": doc_formatado,
+                "Documento": p.CNPJ or p.CPF,
                 "DistanciaMaximaKm": p.DistanciaMaximaKm,
                 "TotalOrdensConcluidas": len([o for o in p.pedidos_alocados if o.StatusPedido == 'CONCLUIDO']),
                 "DisponibilidadeList": disp_list

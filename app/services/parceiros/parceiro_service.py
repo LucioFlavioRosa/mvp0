@@ -1,9 +1,13 @@
-from app.models import ParceiroVeiculo
-from app.models import PedidoServico
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload, joinedload, defer
+from app.models import ParceiroPerfil, ParceiroHabilidade, ParceiroVeiculo, PedidoServico, CatalogoServico
 from app.core.database import DatabaseManager
+from app.core.config import Settings
 import uuid
 import random
 import time
+import os
+from app.schemas.enums import StatusParceiro, StatusPedido
 
 class ParceiroService:
     def __init__(self):
@@ -14,50 +18,10 @@ class ParceiroService:
     # =========================================================================
 
     @staticmethod
-    def _formatar_telefone(telefone: str) -> str:
-        import re
-        if not telefone:
-            return "Não informado"
-        nums = re.sub(r'\D', '', str(telefone))
-        if len(nums) == 11:
-            return f"({nums[:2]}) {nums[2:7]}-{nums[7:]}"
-        elif len(nums) == 10:
-            return f"({nums[:2]}) {nums[2:6]}-{nums[6:]}"
-        return telefone
-
-    @staticmethod
-    def _formatar_documento(cpf: str, cnpj: str):
-        import re
-        doc = cnpj or cpf
-        tipo = "CNPJ" if cnpj else ("CPF" if cpf else "N/I")
-        if not doc:
-            return tipo, "Não informado"
-        nums = re.sub(r'\D', '', str(doc))
-        if len(nums) == 14:
-            return tipo, f"{nums[:2]}.{nums[2:5]}.{nums[5:8]}/{nums[8:12]}-{nums[12:]}"
-        elif len(nums) == 11:
-            return tipo, f"{nums[:3]}.{nums[3:6]}.{nums[6:9]}-{nums[9:]}"
-        return tipo, doc
-
-    @staticmethod
-    def _formatar_status(status: str) -> str:
-        mapa = {
-            "ATIVO": "Ativo",
-            "EM_ANALISE": "Em Análise",
-            "SUSPENSO": "Suspenso",
-            "INATIVO": "Inativo",
-        }
-        if not status:
-            return "Desconhecido"
-        return mapa.get(status.upper(), status.replace("_", " ").title())
-
-    @staticmethod
     def _resolver_habilidades(db_session, hab_ids_str: str) -> list:
         """Resolve os IDs de habilidades para nomes legíveis consultando o CATALOGO_SERVICOS."""
         if not hab_ids_str:
             return []
-        from sqlalchemy import select
-        from app.models import CatalogoServico
         ids = []
         for x in hab_ids_str.split(','):
             try:
@@ -74,7 +38,7 @@ class ParceiroService:
         return [mapa.get(i, f"Serviço {i}") for i in ids]
 
     # --- DADOS PESSOAIS ---
-
+    # ... (manter métodos de salvar) ...
     def getWhatsappID(self, parceiro_uuid):
         sql = "SELECT WhatsAppID FROM PARCEIROS_PERFIL WHERE ParceiroUUID = ?"
         row_user = self.db.execute_read_one(sql, (parceiro_uuid,))
@@ -84,33 +48,21 @@ class ParceiroService:
             return None
 
     def salvar_cnpj_inicial(self, whatsapp_id, cnpj_limpo):
-        """
-        Primeiro passo de dados: Cria ou Atualiza o registro inicial.
-        Gera o UUID do parceiro aqui.
-        """
         parceiro_uuid = str(uuid.uuid4())
-        
-        # MERGE: Se já existe (pelo WhatsAppID), atualiza CNPJ. Se não, cria.
         sql = """
         MERGE PARCEIROS_PERFIL AS target
         USING (SELECT ? AS WA_ID) AS source ON (target.WhatsAppID = source.WA_ID)
         WHEN MATCHED THEN
-            UPDATE SET CNPJ = ?, StatusAtual = 'EM_ANDAMENTO'
+            UPDATE SET CNPJ = ?, StatusAtual = ?
         WHEN NOT MATCHED THEN
             INSERT (ParceiroUUID, WhatsAppID, CNPJ, StatusAtual)
-            VALUES (?, ?, ?, 'EM_ANDAMENTO');
+            VALUES (?, ?, ?, ?);
         """
-        return self.db.execute_write(sql, (whatsapp_id, cnpj_limpo, parceiro_uuid, whatsapp_id, cnpj_limpo))
+        status_andamento = StatusParceiro.EM_ANALISE.value # Antigo EM_ANDAMENTO
+        return self.db.execute_write(sql, (whatsapp_id, cnpj_limpo, status_andamento, parceiro_uuid, whatsapp_id, cnpj_limpo, status_andamento))
 
     def validar_cnpj_api(self, cnpj):
-        """
-        Simula a chamada de API externa (Receita Federal/Serpro).
-        Retorna: (Sucesso: Bool, Dados: Dict)
-        """
-        # Simulação de delay de processamento (conforme diagrama)
         time.sleep(1) 
-        
-        # Lógica Fake: Se terminar em 0000 é inválido, senão válido
         if cnpj.endswith("0000"):
             return False, "CNPJ Baixado ou Inapto"
         return True, "Ativo"
@@ -123,14 +75,8 @@ class ParceiroService:
         sql = "UPDATE PARCEIROS_PERFIL SET NomeCompleto = ? WHERE WhatsAppID = ?"
         return self.db.execute_write(sql, (nome, whatsapp_id))
 
-    # --- ENDEREÇO ---
-
     def buscar_cidade_por_cep(self, cep):
-        """
-        Simula API ViaCEP.
-        """
-        # Em produção: requests.get(f"https://viacep.com.br/ws/{cep}/json/")
-        return "Belém", "PA" # Mock fixo para o projeto
+        return "Belém", "PA" 
 
     def salvar_cep_cidade(self, whatsapp_id, cep, cidade):
         sql = "UPDATE PARCEIROS_PERFIL SET CEP = ?, Cidade = ? WHERE WhatsAppID = ?"
@@ -145,22 +91,16 @@ class ParceiroService:
         return self.db.execute_write(sql, (bairro, whatsapp_id))
 
     def finalizar_endereco_com_geo(self, whatsapp_id, numero):
-        """
-        Salva o número, calcula a Geolocation e atualiza o status.
-        """
-        # 1. Simula cálculo de Lat/Long (Google Maps API)
         lat = -1.455 + (random.random() * 0.001)
         long = -48.502 + (random.random() * 0.001)
-
-        # 2. Query com Geography Point do SQL Server
         sql = """
         UPDATE PARCEIROS_PERFIL 
         SET Numero = ?, 
             Geo_Base = geography::Point(?, ?, 4326),
-            StatusAtual = 'ATIVO' -- Fim do bloco endereço
+            StatusAtual = ? 
         WHERE WhatsAppID = ?
         """
-        return self.db.execute_write(sql, (numero, lat, long, whatsapp_id))
+        return self.db.execute_write(sql, (numero, lat, long, StatusParceiro.ATIVO.value, whatsapp_id))
 
     # =========================================================================
     # GESTÃO DE PARCEIROS (PORTAL BFF)
@@ -168,11 +108,6 @@ class ParceiroService:
     
     @staticmethod
     def listar_parceiros(db_session, filtros: dict) -> dict:
-        from sqlalchemy import select
-        from sqlalchemy.orm import selectinload, joinedload, defer
-        from app.models import ParceiroPerfil, ParceiroHabilidade
-
-        # Query direta na tabela base, sem dependência de Views
         stmt = select(ParceiroPerfil).options(
             selectinload(ParceiroPerfil.habilidades).joinedload(ParceiroHabilidade.servico_ref),
             selectinload(ParceiroPerfil.veiculos).joinedload(ParceiroVeiculo.tipo_veiculo),
@@ -180,7 +115,6 @@ class ParceiroService:
             defer(ParceiroPerfil.Geo_Base)
         )
 
-        # Filtros aplicados diretamente no banco
         if filtros.get("status"):
             stmt = stmt.where(ParceiroPerfil.StatusAtual == filtros["status"])
         if filtros.get("cidade"):
@@ -196,46 +130,41 @@ class ParceiroService:
         parceiros_list = []
 
         for p in parceiros_obj:
-            status = p.StatusAtual or ""
-            if status.upper() == "ATIVO":
+            status = (p.StatusAtual or "").upper()
+            if status == StatusParceiro.ATIVO.value:
                 total_ativos += 1
-            elif status.upper() == "EM_ANALISE":
+            elif status == StatusParceiro.EM_ANALISE.value:
                 total_analise += 1
 
             if p.Cidade:
                 cidades_set.add(p.Cidade)
 
-            tipo_doc, doc_formatado = ParceiroService._formatar_documento(p.CPF, p.CNPJ)
             uuid_str = str(p.ParceiroUUID)
-
-            # Habilidades: Lista de nomes e string de IDs (em memória via selectinload)
             nomes_habilidades = [h.servico_ref.Nome for h in p.habilidades if h.servico_ref]
             ids_habilidades = ",".join([str(h.TipoServicoID) for h in p.habilidades])
-
-            # Veículos: String descritiva (em memória via selectinload)
-            veiculos_str = ", ".join([
-                v.tipo_veiculo.NomeVeiculo for v in p.veiculos if v.tipo_veiculo and v.Ativo
-            ]) or None
-
-            # Total de ordens concluídas (calculado em Python com len(), sem query extra)
-            total_concluidas = len([o for o in p.pedidos_alocados if o.StatusPedido == 'CONCLUIDO'])
+            veiculos_str = ", ".join([v.tipo_veiculo.NomeVeiculo for v in p.veiculos if v.tipo_veiculo and v.Ativo]) or None
+            total_recebidas = len(p.pedidos_alocados)
+            total_concluidas = len([o for o in p.pedidos_alocados if o.StatusPedido == StatusPedido.FINALIZADO.value])
+            taxa_aceite = round((total_concluidas / total_recebidas) * 100, 1) if total_recebidas > 0 else None
 
             parceiros_list.append({
                 "ParceiroUUID": uuid_str,
                 "NomeCompleto": p.NomeCompleto,
                 "Cidade": p.Cidade,
                 "Bairro": p.Bairro,
-                "FotoUrl": f"https://staegeadocscaddevusc.blob.core.windows.net/selfie/{uuid_str.upper()}/selfie.jpg",
-                "TelefoneFormatado": ParceiroService._formatar_telefone(p.WhatsAppID),
-                "TipoDocumento": tipo_doc,
-                "DocumentoFormatado": doc_formatado,
+                "Rua": p.Rua,
+                "Numero": p.Numero,
+                "CEP": p.CEP,
+                "Telefone": p.WhatsAppID,
+                "Documento": p.CNPJ or p.CPF,
+                "FotoUrl": f"{Settings().BASE_STORAGE_URL}/{uuid_str.upper()}/selfie.jpg",
                 "HabilidadesList": nomes_habilidades,
-                "RaioAtuacao": p.DistanciaMaximaKm or 0,
+                "RaioAtuacao": p.DistanciaMaximaKm,
                 "StatusAtual": p.StatusAtual,
-                "StatusLabel": ParceiroService._formatar_status(p.StatusAtual),
                 "Veiculos": veiculos_str,
                 "HabIDs": ids_habilidades,
                 "TotalOrdensConcluidas": total_concluidas,
+                "TaxaAceite": taxa_aceite
             })
 
         total_outros = len(parceiros_list) - total_ativos - total_analise
@@ -246,21 +175,14 @@ class ParceiroService:
             "total_ativos": total_ativos,
             "total_analise": total_analise,
             "total_outros": total_outros,
-            "cidades": cidades_lista
+            "cidades": cidades_lista,
+            "filtros_disponiveis": {
+                "lista_status": [e.value for e in StatusParceiro]
+            }
         }
-
 
     @staticmethod
     def obter_detalhes_parceiro(db_session, parceiro_uuid: str) -> dict:
-        """
-        Retorna detalhes completos de um parceiro (perfil, habilidades, disponibilidade e ordens).
-        Usa relacionamentos do SQLAlchemy para carregar tudo em uma única query estruturada.
-        """
-        from sqlalchemy import select
-        from sqlalchemy.orm import selectinload, joinedload, defer
-        from app.models import ParceiroPerfil, PedidoServico, ParceiroHabilidade
-
-        # 1. Busca perfil, habilidades, disponibilidade e pedidos em uma única query otimizada
         stmt = select(ParceiroPerfil).options(
             selectinload(ParceiroPerfil.habilidades).joinedload(ParceiroHabilidade.servico_ref),
             selectinload(ParceiroPerfil.disponibilidades),
@@ -269,49 +191,46 @@ class ParceiroService:
         ).where(ParceiroPerfil.ParceiroUUID == parceiro_uuid)
 
         parceiro = db_session.execute(stmt).scalars().first()
-        
         if not parceiro:
             return None
             
-        # 2. Formatação do Perfil Principal
-        tipo_doc, doc_formatado = ParceiroService._formatar_documento(parceiro.CPF, parceiro.CNPJ)
-        endereco = f"{parceiro.Rua or ''}, {parceiro.Numero or 'S/N'} - {parceiro.Bairro or ''}, {parceiro.Cidade or ''} - {parceiro.CEP or ''}".strip(", -")
+        # Preparação de Dados (Fase 1.3)
+        uuid_upper = str(parceiro.ParceiroUUID).upper()
+        foto_url = f"{Settings().BASE_STORAGE_URL}/{uuid_upper}/selfie.jpg"
 
         parceiro_dict = {
             "ParceiroUUID": str(parceiro.ParceiroUUID),
-            "NomeCompleto": parceiro.NomeCompleto or "Não Informado",
+            "NomeCompleto": parceiro.NomeCompleto, # Retorna None se não houver
             "Cidade": parceiro.Cidade,
-            "TelefoneFormatado": ParceiroService._formatar_telefone(parceiro.WhatsAppID),
+            "Bairro": parceiro.Bairro,
+            "Rua": parceiro.Rua,
+            "Numero": parceiro.Numero,
+            "CEP": parceiro.CEP,
+            "Telefone": parceiro.WhatsAppID,
             "Email": parceiro.Email,
-            "TipoDocumento": tipo_doc,
-            "DocumentoFormatado": doc_formatado,
-            "StatusAtual": parceiro.StatusAtual or "EM_ANALISE",
-            "StatusLabel": ParceiroService._formatar_status(parceiro.StatusAtual or "EM_ANALISE"),
-            "EnderecoCompleto": endereco,
+            "Documento": parceiro.CNPJ or parceiro.CPF,
+            "StatusAtual": parceiro.StatusAtual,
             "DistanciaMaximaKm": parceiro.DistanciaMaximaKm,
-            "ChavePix": "Cadastrada" if parceiro.StatusAtual == 'ATIVO' else "Não informada",
+            "ChavePix": parceiro.chave_pix,
             "Aceite": True,
-            "FotoUrl": f"https://staegeadocscaddevusc.blob.core.windows.net/selfie/{str(parceiro.ParceiroUUID).upper()}/selfie.jpg"
+            "FotoUrl": foto_url,
+            "TotalOrdensRecebidas": len(parceiro.pedidos_alocados),
+            "TotalOrdensConcluidas": len([o for o in parceiro.pedidos_alocados if o.StatusPedido == StatusPedido.FINALIZADO.value]),
+            "TaxaAceite": round((len([o for o in parceiro.pedidos_alocados if o.StatusPedido == StatusPedido.FINALIZADO.value]) / len(parceiro.pedidos_alocados)) * 100, 1) if len(parceiro.pedidos_alocados) > 0 else None
         }
         
-        # 3. Habilidades (Processadas em memória a partir do relacionamento carregado)
         habilidades = [h.servico_ref.Nome for h in parceiro.habilidades if h.servico_ref]
-        
-        # 4. Disponibilidade (Processada em memória)
-        dias_map = {1: 'Seg', 2: 'Ter', 3: 'Qua', 4: 'Qui', 5: 'Sex', 6: 'Sáb', 7: 'Dom'}
-        periodo_map = {1: 'Manhã', 2: 'Tarde', 3: 'Noite', 4: 'Integral'}
         disponibilidade = [
-            f"{dias_map.get(d.DiaSemana, 'Dia')} - {periodo_map.get(d.Periodo, 'Qualquer')}" 
+            {"dia_id": d.DiaSemana, "periodo_id": d.Periodo}
             for d in parceiro.disponibilidades if d.Ativo
         ]
             
-        # 5. Ordens Vinculadas (Processadas em memória)
         ordens_list = []
         for ped in parceiro.pedidos_alocados:
             ordens_list.append({
                 "OrdemID": str(ped.PedidoID),
                 "PedidoID": ped.NumeroOSSCAE or str(ped.PedidoID)[:8],
-                "Atividade": ped.tipo_servico_ref.Nome if ped.tipo_servico_ref else "N/I",
+                "Atividade": ped.tipo_servico_ref.Nome if ped.tipo_servico_ref else None,
                 "CidadePedido": ped.Cidade,
                 "Urgencia": ped.Urgencia,
                 "StatusOrdem": ped.StatusPedido
@@ -324,52 +243,40 @@ class ParceiroService:
             "ordens": ordens_list
         }
 
-
     @staticmethod
     def parceiros_com_os(db_session) -> dict:
-        """
-        Retorna lista de parceiros e suas ordens vinculadas usando relacionamentos ORM.
-        """
-        from sqlalchemy import select
-        from sqlalchemy.orm import selectinload, joinedload, defer
-        from app.models import ParceiroPerfil, PedidoServico
-
-        # 1. Busca todos os parceiros carregando ordens e nomes de serviço em apenas 2 queries
         stmt = select(ParceiroPerfil).options(
             selectinload(ParceiroPerfil.pedidos_alocados).joinedload(PedidoServico.tipo_servico_ref),
             defer(ParceiroPerfil.Geo_Base)
         ).order_by(ParceiroPerfil.NomeCompleto)
 
         parceiros_db = db_session.execute(stmt).scalars().all()
-        
         parceiros_list = []
 
-        # 2. Monta a estrutura aninhada esperada pelo Frontend
         for p in parceiros_db:
-            tipo_doc, doc_formatado = ParceiroService._formatar_documento(p.CPF, p.CNPJ)
             uuid_str = str(p.ParceiroUUID)
             
+            # Preparação de Dados (Fase 1.3)
+            foto_url = f"{Settings().BASE_STORAGE_URL}/{uuid_str.upper()}/selfie.jpg"
+
             item_parceiro = {
                 "ParceiroUUID": uuid_str,
                 "NomeCompleto": p.NomeCompleto,
                 "Cidade": p.Cidade,
-                "TelefoneFormatado": ParceiroService._formatar_telefone(p.WhatsAppID),
-                "TipoDocumento": tipo_doc,
-                "DocumentoFormatado": doc_formatado,
+                "Telefone": p.WhatsAppID,
+                "Documento": p.CNPJ or p.CPF,
                 "StatusAtual": p.StatusAtual,
-                "StatusLabel": ParceiroService._formatar_status(p.StatusAtual),
-                "FotoUrl": f"https://staegeadocscaddevusc.blob.core.windows.net/selfie/{uuid_str.upper()}/selfie.jpg",
-                "ordens": [] # Lista vazia que será preenchida com as ordens do parceiro (Caso tenha)
+                "FotoUrl": foto_url,
+                "ordens": [] 
             }
 
-            # Preenche a lista de ordens (os dados já estão na memória via selectinload)
             for ped in p.pedidos_alocados:
                 item_parceiro["ordens"].append({
                     "PedidoID": str(ped.PedidoID),
-                    "AtividadeDesc": ped.tipo_servico_ref.Nome if ped.tipo_servico_ref else "N/I",
+                    "AtividadeDesc": ped.tipo_servico_ref.Nome if ped.tipo_servico_ref else None,
                     "CidadePedido": ped.Cidade,
                     "Urgencia": ped.Urgencia,
-                    "DataLimiteFormatada": ped.PrazoConclusaoOS.strftime("%d/%m/%Y") if ped.PrazoConclusaoOS else None,
+                    "DataLimite": ped.PrazoConclusaoOS,
                     "StatusOrdem": ped.StatusPedido
                 })
 

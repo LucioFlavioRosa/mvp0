@@ -83,3 +83,13 @@ class Settings:
         for name in secret_names:
             result[name] = self.get_secret(name)
         return result
+
+    @property
+    def LISTA_BLOCOS(self) -> list:
+        """Lista fixa de blocos utilizada nos filtros de Pedidos."""
+        return ["Bloco A", "Bloco B", "Bloco C", "Bloco D"]
+
+    @property
+    def BASE_STORAGE_URL(self) -> str:
+        """URL base para fotos e selfies, lida do ambiente ou Key Vault."""
+        return self.get_secret("BASE_STORAGE_URL") or "https://staegeadocscaddevusc.blob.core.windows.net/selfie"

@@ -1,9 +1,12 @@
+import traceback
 from sqlalchemy.orm import Session, contains_eager, joinedload
 from sqlalchemy import distinct, select, case
 from app.models import PedidoServico, Unidade, CatalogoServico, VwParceiroDetalhado
 from typing import Optional, Dict, Any, List
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
+import os
+from app.schemas.enums import StatusPedido, UrgenciaPedido, StatusParceiro
 from app.schemas.pedido import ParceiroDetalheResponse, PedidoCreateRequest, PedidoUpdateRequest
 from sqlalchemy import literal_column
 from sqlalchemy.orm import selectinload, defer
@@ -11,8 +14,18 @@ from app.models import ParceiroPerfil, ParceiroHabilidade, ParceiroVeiculo, Parc
 from app.services.parceiros.parceiro_service import ParceiroService
 from app.services.infra.geocoding_service import GeocodingService
 from geopy.distance import geodesic
+from app.core.config import Settings
 
 class PedidoService:
+    @staticmethod
+    def _garantir_utc(dt: Optional[datetime]) -> Optional[datetime]:
+        """Garante que a data seja aware (UTC) ou converte para UTC."""
+        if dt is None:
+            return None
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+
     @staticmethod
     def get_pedidos(
         db: Session,
@@ -26,17 +39,17 @@ class PedidoService:
         Retorna a lista de pedidos filtrados e ordena, imitando a lógica central do portal.
         Também retorna os valores únicos para os dropdowns de filtro.
         """
-        # 1. Busca filtros disponíveis (Todas as opções possíveis para Unidades/Serviços, mas em uso para Status/Urgência)
-        lista_status = db.execute(select(distinct(PedidoServico.StatusPedido)).where(PedidoServico.StatusPedido != None)).scalars().all()
-        lista_urgencia = db.execute(select(distinct(PedidoServico.Urgencia)).where(PedidoServico.Urgencia != None)).scalars().all()
+        # 1. Busca filtros disponíveis via Enums (Fase 2.3)
+        lista_status = [e.value for e in StatusPedido]
+        lista_urgencia = [e.value for e in UrgenciaPedido]
 
         stmt_unidades = select(distinct(Unidade.NomeUnidade)).order_by(Unidade.NomeUnidade.asc())
         lista_unidades = db.execute(stmt_unidades).scalars().all() 
 
         stmt_tipos_servicos = select(distinct(CatalogoServico.Nome)).order_by(CatalogoServico.Nome.asc())
         lista_tipos_servicos = db.execute(stmt_tipos_servicos).scalars().all() 
-
-        lista_blocos = ["Bloco A", "Bloco B", "Bloco C", "Bloco D"]
+        
+        lista_blocos = Settings().LISTA_BLOCOS
 
         # 2. Query Principal de Pedidos
         stmt = (
@@ -61,20 +74,23 @@ class PedidoService:
         # Ordenação Centralizada
         stmt = stmt.order_by(
             case(
-                (PedidoServico.StatusPedido == 'AGUARDANDO', 1),
-                (PedidoServico.StatusPedido == 'DISPARADO', 2),
-                (PedidoServico.StatusPedido == 'VINCULADO', 3),
-                (PedidoServico.StatusPedido == 'FINALIZADO', 4),
-                (PedidoServico.StatusPedido == 'CANCELADO', 5),
+                (PedidoServico.StatusPedido == StatusPedido.AGUARDANDO, 1),
+                (PedidoServico.StatusPedido == StatusPedido.DISPARADO, 2),
+                (PedidoServico.StatusPedido == StatusPedido.VINCULADO, 3),
+                (PedidoServico.StatusPedido == StatusPedido.FINALIZADO, 4),
+                (PedidoServico.StatusPedido == StatusPedido.CANCELADO, 5),
                 else_=6
             ),
             case(
-                (PedidoServico.Urgencia == 'MAXIMA', 1),
-                (PedidoServico.Urgencia == 'URGENTE', 2),
-                (PedidoServico.Urgencia.in_(['JUIZADO', 'PROCON', 'IMPRENSA']), 3),
-                (PedidoServico.Urgencia.in_(['DIRETORIA', 'OUVIDORIA', 'SOCIAL']), 4),
-                (PedidoServico.Urgencia == 'NORMAL', 5),
-                else_=6
+                (PedidoServico.Urgencia == UrgenciaPedido.MAXIMA, 1),
+                (PedidoServico.Urgencia == UrgenciaPedido.URGENTE, 2),
+                (PedidoServico.Urgencia.in_([UrgenciaPedido.JUIZADO, UrgenciaPedido.PROCON, UrgenciaPedido.IMPRENSA]), 3),
+                (PedidoServico.Urgencia.in_([UrgenciaPedido.DIRETORIA, UrgenciaPedido.OUVIDORIA, UrgenciaPedido.SOCIAL]), 4),
+                (PedidoServico.Urgencia == UrgenciaPedido.ALTA, 5),
+                (PedidoServico.Urgencia == UrgenciaPedido.MEDIA, 6),
+                (PedidoServico.Urgencia == UrgenciaPedido.NORMAL, 7),
+                (PedidoServico.Urgencia == UrgenciaPedido.BAIXA, 8),
+                else_=9
             ),
             PedidoServico.PrazoConclusaoOS.asc()
         )
@@ -86,7 +102,7 @@ class PedidoService:
         for p in pedidos_obj:
             p_dict = p.to_dict()
             p_dict['TempoMedio'] = p.tipo_servico_ref.TempoMedioExecucao if p.tipo_servico_ref else 0.0
-            p_dict['Atividade'] = p.tipo_servico_ref.Nome if p.tipo_servico_ref else "Serviço Não Encontrado"
+            p_dict['Atividade'] = p.tipo_servico_ref.Nome if p.tipo_servico_ref else None
             p_dict['UnidadeNome'] = p.unidade_obj.NomeUnidade if p.unidade_obj else None
             p_dict['PrazoConclusaoOS'] = p.PrazoConclusaoOS if p.PrazoConclusaoOS else None
             pedidos_formatados.append(p_dict)
@@ -151,7 +167,7 @@ class PedidoService:
                 )
 
                 parceiros_db = []
-                if status.upper() == 'AGUARDANDO':
+                if status.upper() == StatusPedido.AGUARDANDO.value:
                     # Mostra todos os parceiros disponíveis (ATIVOS) para o tipo de serviço da OS
                     ts_id = int(pedido['TipoServicoID'])
                     stmt_parc = (
@@ -159,7 +175,7 @@ class PedidoService:
                         .join(ParceiroPerfil.habilidades)
                         .where(
                             ParceiroHabilidade.TipoServicoID == ts_id,
-                            ParceiroPerfil.StatusAtual == 'ATIVO'
+                            ParceiroPerfil.StatusAtual == StatusParceiro.ATIVO.value
                         )
                     )
                     parceiros_db = db.execute(stmt_parc).all()
@@ -197,10 +213,8 @@ class PedidoService:
                         except Exception:
                             pass
 
-                    # Formatações via ParceiroService
-                    tipo_doc, doc_formatado = ParceiroService._formatar_documento(p.CPF, p.CNPJ)
                     nomes_hab = [h.servico_ref.Nome for h in p.habilidades if h.servico_ref]
-                    veiculos_str = ", ".join([v.tipo_veiculo.NomeVeiculo for v in p.veiculos if v.tipo_veiculo and v.Ativo]) or "Nenhum"
+                    veiculos_str = ", ".join([v.tipo_veiculo.NomeVeiculo for v in p.veiculos if v.tipo_veiculo and v.Ativo]) or None
                     
                     disp_list = []
                     for d in p.disponibilidades:
@@ -211,33 +225,34 @@ class PedidoService:
                             })
 
                     total_recebidas = len(p.pedidos_alocados)
-                    total_concluidas = len([o for o in p.pedidos_alocados if o.StatusPedido == 'CONCLUIDO'])
+                    total_concluidas = len([o for o in p.pedidos_alocados if o.StatusPedido == StatusPedido.FINALIZADO.value])
                     
+                    # Preparação de Dados (Fase 1.3 e 1.4)
+                    foto_url = f"{Settings().BASE_STORAGE_URL}/{uuid_str.upper()}/selfie.jpg"
+
                     parceiros_final.append({
                         "ParceiroUUID": uuid_str,
                         "NomeCompleto": p.NomeCompleto,
                         "Cidade": p.Cidade,
                         "Bairro": p.Bairro,
                         "Rua": p.Rua,
-                        "Numero": str(p.Numero) if p.Numero else 'S/N',
-                        "TelefoneFormatado": ParceiroService._formatar_telefone(p.WhatsAppID),
+                        "Numero": p.Numero,
+                        "CEP": p.CEP,
+                        "Telefone": p.WhatsAppID,
                         "Email": p.Email,
-                        "FotoUrl": f"https://staegeadocscaddevusc.blob.core.windows.net/selfie/{uuid_str.upper()}/selfie.jpg",
-                        "StatusAtual": p.StatusAtual or 'ATIVO',
+                        "Documento": p.CNPJ or p.CPF,
+                        "FotoUrl": foto_url,
+                        "StatusAtual": p.StatusAtual,
                         "Lat": p_lat,
                         "Lon": p_lng,
                         "distancia": distancia,
                         "Veiculos": veiculos_str,
                         "HabilidadesList": nomes_hab,
-                        "TipoDocumento": tipo_doc,
-                        "DocumentoFormatado": doc_formatado,
                         "DistanciaMaximaKm": p.DistanciaMaximaKm,
-                        "RaioAtuacao": p.DistanciaMaximaKm or 0,
+                        "RaioAtuacao": p.DistanciaMaximaKm,
                         "TotalOrdensConcluidas": total_concluidas,
                         "TotalOrdensRecebidas": total_recebidas,
-                        "AvaliacaoMediaFormatada": None,
-                        "DisponibilidadeList": disp_list,
-                        "UltimoAtendimentoDataFormatado": None
+                        "DisponibilidadeList": disp_list
                     })
 
                 # Ordena por distância
@@ -245,7 +260,6 @@ class PedidoService:
 
         except Exception as e:
             print(f"🔥 [BACKEND] Erro ao buscar detalhes do pedido: {e}")
-            import traceback
             traceback.print_exc()
 
         return {
@@ -287,8 +301,6 @@ class PedidoService:
         Cria uma nova Ordem de Serviço no banco de dados via ORM.
         Aplica geocodificação automática caso não venha no payload.
         """
-        from app.services.infra.geocoding_service import GeocodingService
-        
         try:
             lat = dados.Lat
             lng = dados.Lng
@@ -300,10 +312,16 @@ class PedidoService:
                     bairro=dados.Bairro, 
                     cidade=dados.Cidade
                 )
-                dados.Lat = lat
                 dados.Lng = lng
 
-            novo_pedido = PedidoServico(**dados.dict())
+            # Garantir UTC nas datas recebidas (Fase 2.3)
+            payload = dados.dict()
+            if payload.get("DataAberturaSCAE"):
+                payload["DataAberturaSCAE"] = PedidoService._garantir_utc(payload["DataAberturaSCAE"])
+            if payload.get("PrazoConclusaoOS"):
+                payload["PrazoConclusaoOS"] = PedidoService._garantir_utc(payload["PrazoConclusaoOS"])
+
+            novo_pedido = PedidoServico(**payload)
             db.add(novo_pedido)
             db.commit()
             db.refresh(novo_pedido)
@@ -327,6 +345,9 @@ class PedidoService:
 
             update_data = dados.dict(exclude_unset=True)
             for key, value in update_data.items():
+                # Garantir UTC caso o valor seja uma data (Fase 2.3)
+                if isinstance(value, datetime):
+                    value = PedidoService._garantir_utc(value)
                 setattr(pedido, key, value)
 
             db.commit()

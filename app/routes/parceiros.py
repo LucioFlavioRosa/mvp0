@@ -1,10 +1,12 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, HTTPException
+import traceback
 from sqlalchemy.orm import Session
 from typing import Optional
 
 from app.core.database import get_db
 from app.core.auth import get_bff_token
 from app.services.parceiros.match_service import MatchParceiroService
+from app.services.parceiros.parceiro_service import ParceiroService
 from app.schemas.parceiro import (
     ListarParceirosResponse,
     DetalheParceiroResponse,
@@ -33,8 +35,6 @@ async def match_parceiros(
             kwargs["lng_referencia"] = lng
         return MatchParceiroService.match_parceiros(db, servico_id, **kwargs)
     except Exception as e:
-        from fastapi import HTTPException
-        import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail="Erro ao buscar parceiros")
 
@@ -57,11 +57,8 @@ async def listar_parceiros(
         # Limpar Nones
         filtros = {k: v for k, v in filtros.items() if v}
         
-        from app.services.parceiros.parceiro_service import ParceiroService
         return ParceiroService.listar_parceiros(db, filtros)
     except Exception as e:
-        from fastapi import HTTPException
-        import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail="Erro ao listar parceiros")
 
@@ -73,11 +70,8 @@ async def parceiros_com_os(
     Retorna parceiros e suas ordens de serviço vinculadas.
     """
     try:
-        from app.services.parceiros.parceiro_service import ParceiroService
         return ParceiroService.parceiros_com_os(db)
     except Exception as e:
-        from fastapi import HTTPException
-        import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail="Erro ao buscar parceiros com OS")
 
@@ -90,15 +84,11 @@ async def obter_parceiro_detalhe(
     Retorna o perfil completo de um parceiro (Dados Pessoais, Habilidades, Disponibilidade, Histórico).
     """
     try:
-        from app.services.parceiros.parceiro_service import ParceiroService
         resultado = ParceiroService.obter_detalhes_parceiro(db, parceiro_uuid)
         if not resultado:
-            from fastapi import HTTPException
             raise HTTPException(status_code=404, detail="Parceiro não encontrado")
         return resultado
     except Exception as e:
-        from fastapi import HTTPException
-        import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail="Erro ao buscar detalhes do parceiro")
 
