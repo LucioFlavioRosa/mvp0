@@ -15,6 +15,7 @@ class PedidoResponse(BaseModel):
     UnidadeID: Optional[int]
     StatusPedido: Optional[StatusPedido]
     Urgencia: Optional[UrgenciaPedido]
+    Observacao: Optional[str] = None
     Bloco: Optional[str]
     CEP: Optional[str]
     Cidade: Optional[str]
