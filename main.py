@@ -20,24 +20,21 @@ app = FastAPI(title="Bot Águas do Pará", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Em produção, colocar a URL específica do front
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["*"],  # Permite GET, POST, OPTIONS, etc.
-    allow_headers=["*"],  # Permite todos os headers
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-# Instância global de Settings (Key Vault)
 settings = Settings()
 
-# Instâncias dos Motores
 try:
     bot = BotEngine()
     dispatch_service = DispatchService()
-    print("✅ Motores inicializados (BotEngine e DispatchService).")
+    print("OK Motores inicializados (BotEngine e DispatchService).")
 except Exception as e:
-    print(f"❌ Erro crítico ao iniciar motores: {e}")
+    print(f"ERRO critico ao iniciar motores: {e}")
 
-# Cliente Infobip
 try:
     api_key = settings.get_secret("INFOBIP-API-KEY")
     base_url = settings.get_secret("INFOBIP-BASE-URL")
@@ -45,29 +42,27 @@ try:
 
     if api_key and base_url and sender_number:
         client = InfobipClient(api_key=api_key, base_url=base_url)
-        print("✅ Cliente Infobip autenticado.")
+        print("OK Cliente Infobip autenticado.")
     else:
         client = None
-        print("⚠️ AVISO: Credenciais Infobip não encontradas no Key Vault.")
+        print("AVISO: Credenciais Infobip nao encontradas no Key Vault.")
 except Exception as e:
     client = None
-    print(f"❌ Erro ao iniciar Infobip: {e}")
+    print(f"ERRO ao iniciar Infobip: {e}")
 
-# Modelo de Dados para a API de Disparo
+
 class DispatchRequest(BaseModel):
     pedido_uuid: str
     parceiros: List[str]
 
+
 # ==============================================================================
-# 2. FUNÇÃO DE BACKGROUND (GERENCIA FILA DE MENSAGENS)
+# 2. FUNCAO DE BACKGROUND
 # ==============================================================================
 def enviar_sequencia_background(mensagens, sender_id):
-    """
-    Processa lista de mensagens com delay, sem travar a resposta HTTP.
-    Ideal para sequências longas ou envio de mídia pesada.
-    """
+    """Processa lista de mensagens com delay, sem travar a resposta HTTP."""
     if not client:
-        print("❌ Erro Background: Cliente Infobip offline.")
+        print("ERRO Background: Cliente Infobip offline.")
         return
 
     try:
@@ -92,30 +87,31 @@ def enviar_sequencia_background(mensagens, sender_id):
                     placeholders=item.get('placeholders') or [],
                 )
     except Exception as e:
-        print(f"🔥 Erro na tarefa de Background: {e}")
+        print(f"Erro na tarefa de Background: {e}")
+
 
 # ==============================================================================
-# 3. ROTAS DA APLICAÇÃO
+# 3. ROTAS
 # ==============================================================================
 @app.get("/")
 def health_check():
-    """Rota simples para o Azure verificar se o app está vivo (Ping)."""
+    """Rota simples para o Azure verificar se o app esta vivo."""
     return {"status": "online", "environment": "Azure Production"}
+
 
 @app.post("/bot")
 async def chat_webhook(payload: InfobipInboundPayload, background_tasks: BackgroundTasks):
-    """Webhook principal que recebe todas as mensagens do WhatsApp via Infobip.
+    """Webhook principal que recebe mensagens do WhatsApp via Infobip.
 
     Diferente do Twilio (form-data + TwiML), o Infobip envia JSON estruturado
-    e NÃO aceita resposta via body — a resposta vai como chamada outbound
+    e NAO aceita resposta via body - a resposta vai como chamada outbound
     separada via InfobipClient.
 
-    ⚠ REVISAR MANUALMENTE: este endpoint é público. Considere configurar
+    REVISAR MANUALMENTE: este endpoint e publico. Considere configurar
     Basic Auth no portal Infobip e validar no FastAPI antes do deploy.
     """
-    # Infobip sempre manda em batch (results[]), mesmo com 1 mensagem.
     for result in payload.results:
-        sender_id = result.sender  # E164 sem prefixo whatsapp:
+        sender_id = result.sender
         message_body = ""
         media_url = None
 
@@ -125,16 +121,16 @@ async def chat_webhook(payload: InfobipInboundPayload, background_tasks: Backgro
             media_url = result.message.url
             message_body = (result.message.caption or "").strip()
 
-        print(f"📩 Msg recebida de {sender_id}: {message_body}")
+        print(f"Msg recebida de {sender_id}: {message_body}")
 
         try:
             resposta = bot.processar_mensagem(sender_id, message_body, media_url)
         except Exception as e:
-            print(f"🔥 Erro no BotEngine: {e}")
-            continue  # No Infobip não há fallback TwiML — só loga e segue
+            print(f"Erro no BotEngine: {e}")
+            continue
 
         if not client:
-            print("⚠️ Cliente Infobip offline — não foi possível responder.")
+            print("Cliente Infobip offline - nao foi possivel responder.")
             continue
 
         tipo = resposta.get('tipo')
@@ -175,4 +171,29 @@ async def chat_webhook(payload: InfobipInboundPayload, background_tasks: Backgro
                     sender=sender_number,
                     to=sender_id,
                     text=resposta['conteudo'],
-      
+                )
+            elif tipo == 'media':
+                client.send_image(
+                    sender=sender_number,
+                    to=sender_id,
+                    media_url=resposta['url'],
+                    caption=resposta.get('legenda') or None,
+                )
+        except Exception as e:
+            # REVISAR MANUALMENTE: sem fallback TwiML, falhas aqui significam
+            # que o usuario NAO recebe resposta. Considere retry com tenacity
+            # ou enfileiramento para reprocessar.
+            print(f"Falha no envio via Infobip: {e}")
+
+    return {"status": "ok"}
+
+
+@app.post("/api/dispatch")
+async def dispatch_order(data: DispatchRequest):
+    print(f"API Dispatch: Pedido {data.pedido_uuid} -> {len(data.parceiros)} parceiros.")
+    try:
+        result = dispatch_service.enviar_oferta_para_prestadores(data.parceiros, data.pedido_uuid)
+        return result
+    except Exception as e:
+        print(f"Erro API Dispatch: {e}")
+        return {"status": "error", "message": str(e)}
