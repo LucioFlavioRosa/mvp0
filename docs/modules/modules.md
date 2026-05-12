@@ -55,12 +55,7 @@ class ModuloOnboarding:
   - `'RETOMAR_FLUXO'` → BotEngine vai pra etapa salva no `step_backup`
   - `'DECISAO_REFAZER'` → oferece refazer
   - `'PAUSAR_FLUXO'` → mantém step anterior
-- **Templates de WhatsApp** referenciados:
-  - `TEMPLATE_CONTINUAR = 'HX561c6dcac03b3f14b710ac0f02038813'` — ⚠ **SID Twilio antigo, ainda não migrado**
-  - `TEMPLATE_REFAZER = 'HXf09134b49fb98aab9718a796df2ac491'` — ⚠ **SID Twilio antigo, ainda não migrado**
-  - `TEMPLATE_CHECK = 'HXab1915d077dc69d3a0e124e42fabff46'` — ⚠ **SID Twilio antigo, ainda não migrado**
-
-  Estes SIDs **não foram convertidos** durante a migração Twilio→Infobip. Precisam virar `templateName` (string definida no portal Infobip). Ver [`ARCHITECTURE.md → Pontos de fragilidade`](../ARCHITECTURE.md#pontos-de-fragilidade-conhecidos).
+- **Templates de WhatsApp**: o módulo referencia 3 templates registrados no portal Infobip (`TEMPLATE_CONTINUAR`, `TEMPLATE_REFAZER`, `TEMPLATE_CHECK`). Os identificadores ficam como `templateName` (string definida no portal). _Histórico:_ originalmente eram SIDs Twilio `HX...` durante a era pré-migração; foram convertidos em PR posterior.
 
 ## Etapas de campo (`EtapaPessoal`, `EtapaEndereco`, ...)
 
@@ -119,7 +114,7 @@ class GeradorResposta:
 **Pontos não óbvios:**
 
 - **`template(sid, variaveis, ...)`** ainda usa o nome antigo (`sid` + `variaveis`). ⚠ Após migração Infobip, deveria ser `template_name` + `placeholders`. Não foi atualizado no PR de migração.
-- **`media`** tem docstring mencionando Twilio (`O Twilio vai buscar o arquivo`). ⚠ Atualizar comentário pra Infobip.
+- **`media`** historicamente tinha docstring mencionando Twilio. Atualizar para Infobip no próximo touch nesse arquivo (cosmético).
 - Esta classe é pouco usada na prática — a maioria das etapas constrói o dict inline. Considerar deprecar ou padronizar.
 
 ## O que NÃO está aqui

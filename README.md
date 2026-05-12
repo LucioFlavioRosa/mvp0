@@ -13,6 +13,7 @@ Plataforma que orquestra o ciclo de vida de prestadores terceiros: onboarding vi
 - **Banco**: Azure SQL Server (via `pyodbc` + ODBC Driver 18)
 - **Cloud**: Azure (App Service Linux, Key Vault, Blob Storage)
 - **WhatsApp**: Infobip (API REST)
+- **Telemetria**: Application Insights via `azure-monitor-opentelemetry` (auto-instrumentação FastAPI/requests/pyodbc)
 
 ## Setup local
 
@@ -70,11 +71,14 @@ curl -X POST http://localhost:8000/bot \
 
 ## Variáveis de ambiente e secrets
 
-A única variável de ambiente lida diretamente é `AZURE_KEYVAULT_URL`. Todos os outros segredos vivem no Key Vault.
+Variáveis de ambiente são lidas diretamente; segredos vivem no Azure Key Vault.
 
 | Local | Nome | Uso |
 |---|---|---|
 | env var | `AZURE_KEYVAULT_URL` | URL do Key Vault (obrigatório) |
+| env var | `APPLICATIONINSIGHTS_CONNECTION_STRING` | Conexão com Application Insights (telemetria estruturada) |
+| env var | `LOG_LEVEL` | Nível de log (default `INFO`) — `DEBUG` em investigação |
+| env var | `LOG_PII_SALT` | Salt do hash SHA-256 para mascarar PII (LGPD) — rotacionável |
 | Key Vault | `INFOBIP-API-KEY` | Auth da API Infobip |
 | Key Vault | `INFOBIP-BASE-URL` | Endpoint do tenant Infobip (`https://<id>.api.infobip.com`) |
 | Key Vault | `INFOBIP-SENDER` | Número remetente E164 sem prefixo |
@@ -101,7 +105,7 @@ mvp0/
 ├── main.py                          # Entry FastAPI: webhook + dispatch
 ├── app/
 │   ├── bot_engine.py                # Orquestrador FSM do chat
-│   ├── core/         (config, database)
+│   ├── core/         (config, database, telemetry, log_dimensions)
 │   ├── integrations/ (infobip — cliente HTTP)
 │   ├── schemas/      (infobip_webhook — Pydantic)
 │   ├── services/     (5 services: whatsapp, dispatch, blob, parceiro, session)
@@ -124,6 +128,9 @@ Configurar no App Service:
 
 1. **Application Settings**:
    - `AZURE_KEYVAULT_URL` (apontando pro vault de prod)
+   - `APPLICATIONINSIGHTS_CONNECTION_STRING` (do recurso App Insights no portal Azure)
+   - `LOG_LEVEL=INFO` (default; trocar pra `DEBUG` durante investigação)
+   - `LOG_PII_SALT` (rotacionável — definir no Key Vault e referenciar via App Settings)
    - Startup command: `bash startup.sh`
 2. **Managed Identity** habilitada — usa `DefaultAzureCredential` pra ler do Key Vault.
 3. **Webhook do Infobip** apontando pra `https://<your-app>.azurewebsites.net/bot`.

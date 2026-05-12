@@ -12,6 +12,7 @@ Integrações principais:
 - **Azure SQL** — persistência de parceiros, sessões, pedidos
 - **Azure Blob Storage** — armazenamento de documentos (CNH, RG, selfie)
 - **Azure Key Vault** — secrets
+- **Application Insights** — telemetria estruturada via `azure-monitor-opentelemetry` (auto-instrumentação + custom dimensions + PII masking + correlation_id por request)
 
 ## Componentes
 
@@ -47,7 +48,7 @@ Lista de componentes:
 - **Modules** (`app/modules/`) — etapas do funil de cadastro (`pessoal`, `endereco`, `habilidades`, `veiculos`, `disponibilidade`, `documentos`, `oferta`) + `onboarding` (entrada/decisões iniciais). Detalhes em [`modules/modules.md`](modules/modules.md).
 - **Services Layer** (`app/services/`) — `WhatsAppService`, `DispatchService`, `AzureBlobService`, `ParceiroService`, `SessionService`. Encapsulam DB e integrações externas. Detalhes em [`modules/services.md`](modules/services.md).
 - **Integrations** (`app/integrations/` + `app/schemas/`) — `InfobipClient` (HTTP wrapper) e schemas Pydantic do payload de webhook. Detalhes em [`modules/integrations.md`](modules/integrations.md).
-- **Core** (`app/core/`) — `Settings` (Key Vault singleton) e `DatabaseManager` (pyodbc + retry). Detalhes em [`modules/core.md`](modules/core.md).
+- **Core** (`app/core/`) — `Settings` (Key Vault singleton), `DatabaseManager` (pyodbc + retry), `telemetry` (Application Insights bootstrap + `mask_pii` + `correlation_id_middleware`) e `log_dimensions` (vocabulário canônico de dimensions). Detalhes em [`modules/core.md`](modules/core.md).
 
 ## Fluxos principais
 
@@ -159,6 +160,14 @@ Azure SQL Serverless pode demorar até 1 minuto pra acordar de pausa. Sem retry,
 
 Antes da migração Twilio→Infobip, o webhook respondia com TwiML como salvaguarda. Hoje, se a chamada outbound falha, o parceiro **não recebe nada** — só sai log de erro. ⚠ Endereçar com retry (`tenacity`) ou queue. Ver `MIGRATION_NOTES.md` item 3.
 
+### Telemetria com correlation_id middleware e PII masking
+
+Toda request ganha um `operation_id` (gerado por `correlation_id_middleware` em `app/core/telemetry.py`) que é injetado em todas as `custom_dimensions` dos logs subsequentes via `logging.Filter`. Permite query Kusto tipo "todos os logs desta mensagem" no App Insights.
+
+Identificadores PII (WhatsApp ID, CPF, CNPJ, email) são mascarados com `mask_pii()` — SHA-256 truncado + salt em env var (`LOG_PII_SALT`, rotacionável). É determinístico — permite correlacionar logs do mesmo usuário sem expor identificador (atende LGPD).
+
+`azure-monitor-opentelemetry` instrumenta automaticamente FastAPI (requests), `requests`/`httpx` (HTTP outbound) e `pyodbc` (SQL queries) — não há logs manuais nesses caminhos.
+
 ### State machine textual em `BotEngine`
 
 Estados são strings (`'AGUARDANDO_CNPJ'`, `'INICIAR_VEICULOS'`, etc) gravadas em `CHAT_SESSIONS.CurrentStep`. Roteamento é um grande `if/elif/elif` em `processar_mensagem`. **Por que não FSM declarativa**: a ordem dos elifs codifica precedência; alguns ramos usam `startswith` (prefixo) em vez de match exato. Refatorar pra tabela tem alto risco de bug sutil. Aceitar o switch grande como custo da clareza linear.
@@ -171,7 +180,7 @@ Estados são strings (`'AGUARDANDO_CNPJ'`, `'INICIAR_VEICULOS'`, etc) gravadas e
 
 Itens que valeria endereçar (ordem de impacto):
 
-1. **Templates Twilio não migrados em `app/modules/onboarding.py:8-10`** — `TEMPLATE_CONTINUAR`, `TEMPLATE_REFAZER`, `TEMPLATE_CHECK` ainda têm SIDs Twilio (`HX...`). Não funcionarão no Infobip até serem re-cadastrados no portal e os identificadores trocados por `templateName`. Ver `MIGRATION_NOTES.md`.
+1. ~~**Templates Twilio não migrados em `app/modules/onboarding.py`**~~ — **Resolvido**. Os SIDs `HX...` foram removidos. (Histórico: era pendência da migração Twilio→Infobip; checada em `git grep 'HX[a-f0-9]{32}'` → vazio.)
 
 2. **Payload de template inconsistente** — `onboarding.py` e `app/modules/common.py:29-34` (`GeradorResposta.template`) ainda usam `template_sid` + `variaveis` (dict). Após migração Infobip, deveriam ser `template_name` + `placeholders` (lista). Funcionará via fallback `_dict_to_positional_list` em `WhatsAppService`, mas é frágil — se a ordem das chaves do dict não for `'1', '2', ...` previsível, o resultado é errado.
 
@@ -183,7 +192,7 @@ Itens que valeria endereçar (ordem de impacto):
 
 6. **CORS aberto** — `allow_origins=["*"]` em `main.py:22-28`. Apertar antes do go-live.
 
-7. **Logs via `print` + `traceback.print_exc()`** — sem estrutura. Application Insights captura o stdout mas filtragem é difícil.
+7. ~~**Logs via `print` + `traceback.print_exc()`**~~ — **Resolvido** pelo PR `chore/structured-logging`. Hoje: `logger` estruturado por módulo + custom dimensions canônicas + PII masking + correlation_id middleware. Ver seção "Decisões-chave" e [`modules/core.md → Telemetria`](modules/core.md).
 
 ## Recursos externos
 
@@ -193,6 +202,7 @@ Itens que valeria endereçar (ordem de impacto):
 | Azure SQL Server | Persistência | Secrets `DB-SERVER`, `DB-NAME`, `DB-USER`, `DB-PASSWORD` |
 | Azure Blob Storage | Documentos legais | Secret `CONNECTION-STRING-AZURE-STORAGE` |
 | Infobip (WhatsApp) | Canal de chat | Secrets `INFOBIP-API-KEY`, `INFOBIP-BASE-URL`, `INFOBIP-SENDER` |
+| Application Insights | Telemetria, logs estruturados, traces | env `APPLICATIONINSIGHTS_CONNECTION_STRING` |
 | Google Maps API (futuro) | Geolocation real | Atualmente mockada |
 | Serpro / Receita Federal (futuro) | Validação de CNPJ | Atualmente mockada |
 
