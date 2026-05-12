@@ -218,6 +218,27 @@ Todas as ações críticas são auditadas para fins forenses e de conformidade:
 
 ---
 
+### 5.1 Telemetria Estruturada (Application Insights)
+
+A aplicação envia telemetria estruturada para o **Azure Application Insights** via biblioteca `azure-monitor-opentelemetry`. Configuração consolidada em `app/core/telemetry.py`. Pontos relevantes para Segurança e Governança:
+
+| Aspecto | Implementação |
+| :--- | :--- |
+| **Auto-instrumentação** | FastAPI (requests inbound), `requests`/`httpx` (HTTP outbound) e `pyodbc` (SQL) instrumentados sem código manual. Captura `requestTelemetry`, `dependencyTelemetry` e `exceptionTelemetry` automaticamente. |
+| **Custom Dimensions canônicas** | Vocabulário central em `app/core/log_dimensions.py` (`operation`, `step`, `sender_hash`, `external_service`, `duration_ms`, etc) — viabiliza queries Kusto consistentes. |
+| **Mascaramento de PII (LGPD)** | Função `mask_pii(value)` aplica SHA-256 truncado (12 chars) com salt rotacionável via env var `LOG_PII_SALT`. Determinístico — permite correlação por usuário sem reidentificação. Aplicado a WhatsApp ID, CPF, CNPJ, e-mail em todos os logs estruturados. |
+| **Correlation ID** | Middleware FastAPI atribui `operation_id` por request (header `X-Operation-Id` propagado). Injetado em todas as `customDimensions` via `logging.Filter` — permite query "todos os logs deste webhook". |
+| **Níveis de log** | `LOG_LEVEL` em env var. Default `INFO` em produção. `DEBUG` apenas em investigação temporária. |
+| **Conexão** | `APPLICATIONINSIGHTS_CONNECTION_STRING` configurada em App Service Settings (não vai pro código). |
+
+#### Garantias adicionais para LGPD
+
+- Logs de inbound (`webhook_inbound`) **nunca** contêm o conteúdo da mensagem do usuário — apenas `message_type` e `message_len`.
+- Coordenadas GPS de parceiros vão para nível **DEBUG** (não persiste em produção).
+- Query de sanity check (regex CPF/CNPJ em `traces.message`) executada após cada release detecta vazamentos acidentais — se retornar resultados, abrir incidente.
+
+---
+
 ## 6. Conclusão para o Comitê
 
 A arquitetura proposta utiliza serviços gerenciados (Serverless/PaaS) para minimizar a sobrecarga operacional de patches de segurança e maximizar a disponibilidade. O uso de **Managed Identities** e **Key Vault** garante o princípio de privilégio mínimo e a proteção de segredos. A estrutura de dados foi desenhada considerando a segregação lógica necessária para atender à LGPD, com controles de acesso, criptografia e auditoria nativos da nuvem Azure.

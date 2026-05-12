@@ -1,13 +1,15 @@
 # Módulo: core
 
-> Infraestrutura compartilhada: leitura de secrets do Azure Key Vault e acesso resiliente ao SQL Server.
+> Infraestrutura compartilhada: secrets do Key Vault, acesso resiliente ao SQL Server, e telemetria estruturada para Application Insights.
 
 ## Propósito
 
-Centraliza dois recursos transversais que toda a aplicação consome:
+Centraliza quatro recursos transversais que toda a aplicação consome:
 
 - **Settings** — singleton com cache local para evitar round-trips no Key Vault a cada leitura de secret.
 - **DatabaseManager** — wrapper sobre `pyodbc` com retry exponencial para tolerar a latência de cold start do Azure SQL Serverless.
+- **Telemetry** — bootstrap do `azure-monitor-opentelemetry`, factory de logger, mascaramento de PII e middleware de correlation ID.
+- **Log dimensions** — constantes canônicas para custom dimensions no Application Insights (evita typos em queries Kusto).
 
 ## Estrutura
 
@@ -15,6 +17,8 @@ Centraliza dois recursos transversais que toda a aplicação consome:
 |---|---|---|
 | `config.py` | `Settings` | Lê secrets do Azure Key Vault (cache local) |
 | `database.py` | `DatabaseManager` | Conexão e queries no Azure SQL com retry |
+| `telemetry.py` | `configure_telemetry`, `get_logger`, `mask_pii`, `correlation_id_middleware` | Bootstrap App Insights + PII masking + correlation ID |
+| `log_dimensions.py` | (módulo de constantes) | Vocabulário canônico das custom dimensions (`OPERATION`, `SENDER_HASH`, `STEP`, etc.) |
 
 ## API pública
 
@@ -99,6 +103,48 @@ Variáveis de ambiente:
 | Variável | Lido em | Uso |
 |---|---|---|
 | `AZURE_KEYVAULT_URL` | `Settings._init` | URL do vault (obrigatório) |
+| `APPLICATIONINSIGHTS_CONNECTION_STRING` | `configure_telemetry` | Conexão com App Insights (opcional — sem ela cai em stdout) |
+| `LOG_LEVEL` | `configure_telemetry` | Nível raiz (default `INFO`) |
+| `LOG_PII_SALT` | `mask_pii` | Salt do hash SHA-256 (default fallback se ausente, mas defina em prod) |
+
+### Telemetria — `telemetry.py`
+
+```python
+def configure_telemetry() -> None: ...                       # chamar uma vez no startup, ANTES de FastAPI()
+def get_logger(name: str) -> logging.Logger: ...             # logger por módulo
+def mask_pii(value: Any, length: int = 12) -> str: ...       # SHA-256 truncado com salt rotacionável
+async def correlation_id_middleware(request, call_next): ... # injetar via app.middleware("http")(...)
+```
+
+**Como é usado:**
+
+- `configure_telemetry()` é a **primeira instrução** de `main.py` — chamada antes de criar a FastAPI app. Auto-instrumentação só funciona se rodar nessa ordem.
+- Cada módulo cria seu logger no topo: `logger = get_logger(__name__)`.
+- `mask_pii` é aplicado em todo log que toca identificador PII (WhatsApp ID, CPF, CNPJ, e-mail).
+- O middleware `correlation_id_middleware` atribui `operation_id` por request — propagado em todas as `custom_dimensions` via `_OperationIdFilter` (instalado automaticamente).
+
+**Pontos não óbvios:**
+
+- **Sem `APPLICATIONINSIGHTS_CONNECTION_STRING`** o módulo cai em fallback: configura `logging.basicConfig` com formato compacto pro stdout. Útil em dev local.
+- O `_PII_SALT` é lido de `LOG_PII_SALT` env var. Rotacionar invalida correlações de logs antigos (efeito intencional — descarta histórico se houver vazamento do salt).
+- `mask_pii` é **determinístico** — não usa `os.urandom`. Mesmo identificador sempre gera mesmo hash.
+- Auto-instrumentação habilitada: `fastapi`, `requests`, `urllib3`, `azure_sdk`. **Desabilitada**: `django`, `flask` (não usamos).
+
+### Dimensions canônicas — `log_dimensions.py`
+
+Módulo só com constantes. Use-as em vez de strings literais para evitar typos e facilitar refactor:
+
+```python
+from app.core import log_dimensions as ld
+
+logger.info("evento", extra={"custom_dimensions": {
+    ld.OPERATION: "process_message",
+    ld.SENDER_HASH: mask_pii(sender_id),
+    ld.STEP: "AGUARDANDO_CPF",
+}})
+```
+
+Constantes principais: `OPERATION`, `STEP`, `STEP_FROM`/`STEP_TO`, `SENDER_HASH`, `PARCEIRO_HASH`, `PEDIDO_ID`, `COMPONENT`, `DURATION_MS`, `EXTERNAL_SERVICE`/`EXTERNAL_STATUS`, `RESULT`, `MESSAGE_TYPE`/`MESSAGE_LEN`, `TIPO`, `MOCK`, `MISSING_SECRETS`.
 
 ## O que NÃO está aqui
 
