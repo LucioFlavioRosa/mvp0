@@ -1,0 +1,207 @@
+# Arquitetura — Bot Águas do Pará
+
+> Visão de **arquitetura de código** do projeto. Complementa [`Infraestrutura.md`](Infraestrutura.md), que cobre a camada de infra/segurança Azure.
+
+## Visão geral
+
+Aplicação FastAPI que opera um bot WhatsApp para credenciamento de prestadores de serviço (parceiros) no programa Águas do Pará. O parceiro completa um cadastro multi-etapa via chat; o backoffice dispara ofertas de serviço aos parceiros credenciados; o sistema rastreia aceites e ordens de serviço.
+
+Integrações principais:
+
+- **Infobip** — canal WhatsApp (inbound + outbound + mídia)
+- **Azure SQL** — persistência de parceiros, sessões, pedidos
+- **Azure Blob Storage** — armazenamento de documentos (CNH, RG, selfie)
+- **Azure Key Vault** — secrets
+
+## Componentes
+
+```mermaid
+graph TB
+    User[Parceiro<br>WhatsApp]
+    Backoffice[Backoffice<br>operacional]
+
+    User -->|mensagens| InfobipCloud[Infobip Cloud]
+    InfobipCloud -->|webhook<br>JSON| Main[main.py<br>FastAPI]
+    Backoffice -->|POST /api/dispatch| Main
+
+    Main --> BotEngine[BotEngine<br>FSM]
+    Main --> Dispatch[DispatchService]
+
+    BotEngine --> Modules[Modules<br>onboarding + 7 etapas]
+    Modules --> Services[Services Layer]
+    Dispatch --> Services
+
+    Services --> Integrations[InfobipClient]
+    Services --> DB[(Azure SQL)]
+    Services --> Blob[Azure Blob]
+    Services --> KV[Key Vault]
+
+    Integrations -->|outbound| InfobipCloud
+    InfobipCloud -->|mensagens| User
+```
+
+Lista de componentes:
+
+- **`main.py` (FastAPI)** — expõe `/bot` (webhook inbound) e `/api/dispatch` (API de notificação). Faz parsing, delega ao `BotEngine` ou `DispatchService`, e dispara o envio outbound via `InfobipClient`.
+- **`BotEngine`** (`app/bot_engine.py`) — orquestrador FSM. Carrega sessão, decide a etapa, salva estado, retorna resposta. Detalhes em [`modules/bot_engine.md`](modules/bot_engine.md).
+- **Modules** (`app/modules/`) — etapas do funil de cadastro (`pessoal`, `endereco`, `habilidades`, `veiculos`, `disponibilidade`, `documentos`, `oferta`) + `onboarding` (entrada/decisões iniciais). Detalhes em [`modules/modules.md`](modules/modules.md).
+- **Services Layer** (`app/services/`) — `WhatsAppService`, `DispatchService`, `AzureBlobService`, `ParceiroService`, `SessionService`. Encapsulam DB e integrações externas. Detalhes em [`modules/services.md`](modules/services.md).
+- **Integrations** (`app/integrations/` + `app/schemas/`) — `InfobipClient` (HTTP wrapper) e schemas Pydantic do payload de webhook. Detalhes em [`modules/integrations.md`](modules/integrations.md).
+- **Core** (`app/core/`) — `Settings` (Key Vault singleton) e `DatabaseManager` (pyodbc + retry). Detalhes em [`modules/core.md`](modules/core.md).
+
+## Fluxos principais
+
+### Fluxo inbound (parceiro envia mensagem)
+
+```mermaid
+sequenceDiagram
+    participant User as Parceiro
+    participant Infobip
+    participant Main as main.py
+    participant Bot as BotEngine
+    participant DB as Azure SQL
+    participant Client as InfobipClient
+
+    User->>Infobip: Envia mensagem WhatsApp
+    Infobip->>Main: POST /bot (InfobipInboundPayload)
+    loop para cada result no batch
+        Main->>Bot: processar_mensagem(sender, texto, media_url)
+        Bot->>DB: SELECT em CHAT_SESSIONS (estado)
+        Bot->>DB: SELECT/UPDATE em PARCEIROS_PERFIL (via etapa)
+        Bot-->>Main: resposta_bot (dict)
+        alt resposta tipo = sequencia
+            Main->>Main: agenda enviar_sequencia_background
+        else outros tipos
+            Main->>Client: send_text / send_template / send_image
+            Client->>Infobip: POST /whatsapp/1/message/...
+            Infobip->>User: Mensagem de resposta
+        end
+    end
+    Main-->>Infobip: 200 OK ({"status": "ok"})
+```
+
+### Fluxo dispatch (backoffice notifica parceiros)
+
+```mermaid
+sequenceDiagram
+    participant Backoffice
+    participant Main as main.py
+    participant Dispatch as DispatchService
+    participant DB as Azure SQL
+    participant WhatsApp as WhatsAppService
+    participant Infobip
+
+    Backoffice->>Main: POST /api/dispatch<br>{pedido_uuid, parceiros: [...]}
+    Main->>Dispatch: enviar_oferta_para_prestadores(...)
+    Dispatch->>DB: SELECT pedido em PEDIDOS_SERVICO
+    loop para cada parceiro_uuid
+        Dispatch->>DB: SELECT em PARCEIROS_PERFIL
+        Dispatch->>DB: INSERT em PEDIDOS_DISPAROS (Status=ENVIADO)
+        Dispatch->>WhatsApp: enviar_resposta(template "oferta_servico")
+        WhatsApp->>WhatsApp: threading.Thread fire-and-forget
+        WhatsApp->>Infobip: POST /whatsapp/1/message/template
+        Infobip->>WhatsApp: 200 (async)
+    end
+    Dispatch-->>Main: {status: success, enviados: N}
+    Main-->>Backoffice: 200 OK
+```
+
+### Fluxo de retomada após timeout
+
+Quando o parceiro fica inativo por >5 minutos no meio do cadastro, o `BotEngine` força reset visual da sessão mas guarda o ponto anterior em `dados['step_backup']`:
+
+```mermaid
+flowchart LR
+    A[Parceiro retorna<br>após >5min] --> B{Saudação?}
+    B -->|Sim| C[Mostra menu inicial<br>salva step_backup]
+    B -->|Não| D[Carrega sessão<br>step_atual = START se timeout]
+    C --> E[Usuário responde<br>SIM/CONTINUAR]
+    D --> F[onboarding.processar_decisao_continuar]
+    E --> F
+    F --> G{Sinal}
+    G -->|RETOMAR_FLUXO| H[Inspeciona step_backup<br>e retoma etapa]
+    G -->|DECISAO_REFAZER| I[Oferece refazer]
+```
+
+Detalhe da lógica de inspeção do `step_backup` em [`modules/bot_engine.md`](modules/bot_engine.md#3-l%C3%B3gica-central-de-retomada-linhas-138%E2%80%93200).
+
+## Padrão de mensagem
+
+O **contrato comum** entre BotEngine, etapas, `WhatsAppService` e `main.py` é o dict `resposta_bot`. Toda etapa retorna um dict com chave `tipo`:
+
+| `tipo` | Campos | Quem envia |
+|---|---|---|
+| `texto` | `conteudo: str` | `WhatsAppService.send_text` ou `InfobipClient.send_text` |
+| `media` | `url: str`, `legenda: str` | `send_image` |
+| `template` | `template_name: str`, `placeholders: list[str]`, `language: str` (opcional) | `send_template` |
+| `combo_inicial` | `texto: str` + campos de `template` | `send_text` (texto) + `send_template` (após 0.5s) |
+| `sequencia` | `mensagens: list[dict]` (cada item com `tipo` + `delay: float`) | Background task com `time.sleep` |
+
+**Por que esse padrão existe:** desacopla as etapas do canal de envio. As etapas retornam intenção; quem decide como entregar é o `WhatsAppService` ou o `main.py`. Trocar de provedor não exige tocar nas etapas.
+
+⚠ **Pendência da migração**: alguns lugares ainda emitem `template_sid` + `variaveis` (formato Twilio) em vez de `template_name` + `placeholders`. Ver "Pontos de fragilidade" abaixo.
+
+## Decisões-chave
+
+### Singleton de `Settings` com cache local
+
+Justificativa: o Key Vault tem latência (~50–100ms por leitura) e cota. Cachear em processo evita round-trips repetidos. **Trade-off**: pra pegar rotação de secret é preciso reiniciar o app — aceitável dada a baixa frequência.
+
+### Retry exponencial no `DatabaseManager`
+
+Azure SQL Serverless pode demorar até 1 minuto pra acordar de pausa. Sem retry, o primeiro request após inatividade falha. O retry classifica códigos transientes (`08001`, `HYT00`, `08S01`, `10054`) e faz backoff `2 * (2^n) + jitter`. Erros permanentes (sintaxe, FK) não disparam retry.
+
+### Threading no envio outbound
+
+`WhatsAppService.enviar_resposta` dispara `threading.Thread` para não bloquear o caller (webhook handler ou dispatch). **Trade-off**: se a app cai, mensagens em voo são perdidas — sem fila persistente. Endereçar via Service Bus + worker se a operação ficar crítica.
+
+### Sem fallback de resposta (post-migração)
+
+Antes da migração Twilio→Infobip, o webhook respondia com TwiML como salvaguarda. Hoje, se a chamada outbound falha, o parceiro **não recebe nada** — só sai log de erro. ⚠ Endereçar com retry (`tenacity`) ou queue. Ver `MIGRATION_NOTES.md` item 3.
+
+### State machine textual em `BotEngine`
+
+Estados são strings (`'AGUARDANDO_CNPJ'`, `'INICIAR_VEICULOS'`, etc) gravadas em `CHAT_SESSIONS.CurrentStep`. Roteamento é um grande `if/elif/elif` em `processar_mensagem`. **Por que não FSM declarativa**: a ordem dos elifs codifica precedência; alguns ramos usam `startswith` (prefixo) em vez de match exato. Refatorar pra tabela tem alto risco de bug sutil. Aceitar o switch grande como custo da clareza linear.
+
+### Wrapper `WhatsAppService` sobre `InfobipClient`
+
+`WhatsAppService` poderia parecer redundante (mais uma camada). Justificativa: preserva a **interface pública** que o restante do código já usava (`enviar_resposta(dict)`), permitindo a migração não tocar callers como `DispatchService`. Custo: 1 arquivo a mais. Benefício: blast radius da migração reduzido.
+
+## Pontos de fragilidade conhecidos
+
+Itens que valeria endereçar (ordem de impacto):
+
+1. **Templates Twilio não migrados em `app/modules/onboarding.py:8-10`** — `TEMPLATE_CONTINUAR`, `TEMPLATE_REFAZER`, `TEMPLATE_CHECK` ainda têm SIDs Twilio (`HX...`). Não funcionarão no Infobip até serem re-cadastrados no portal e os identificadores trocados por `templateName`. Ver `MIGRATION_NOTES.md`.
+
+2. **Payload de template inconsistente** — `onboarding.py` e `app/modules/common.py:29-34` (`GeradorResposta.template`) ainda usam `template_sid` + `variaveis` (dict). Após migração Infobip, deveriam ser `template_name` + `placeholders` (lista). Funcionará via fallback `_dict_to_positional_list` em `WhatsAppService`, mas é frágil — se a ordem das chaves do dict não for `'1', '2', ...` previsível, o resultado é errado.
+
+3. **Sem retry / dead-letter queue** em envios outbound. Falha de Infobip = mensagem perdida silenciosamente.
+
+4. **Webhook sem autenticação** — `POST /bot` aceita qualquer request. Configurar Basic Auth no portal Infobip e validar via `Depends(HTTPBasic())` no FastAPI.
+
+5. **Mocks em produção** — `ParceiroService.validar_cnpj_api`, `buscar_cidade_por_cep`, cálculo de geolocation. Trocar por integrações reais antes de prod.
+
+6. **CORS aberto** — `allow_origins=["*"]` em `main.py:22-28`. Apertar antes do go-live.
+
+7. **Logs via `print` + `traceback.print_exc()`** — sem estrutura. Application Insights captura o stdout mas filtragem é difícil.
+
+## Recursos externos
+
+| Recurso | Propósito | Configuração |
+|---|---|---|
+| Azure Key Vault | Secrets centralizados | env `AZURE_KEYVAULT_URL` |
+| Azure SQL Server | Persistência | Secrets `DB-SERVER`, `DB-NAME`, `DB-USER`, `DB-PASSWORD` |
+| Azure Blob Storage | Documentos legais | Secret `CONNECTION-STRING-AZURE-STORAGE` |
+| Infobip (WhatsApp) | Canal de chat | Secrets `INFOBIP-API-KEY`, `INFOBIP-BASE-URL`, `INFOBIP-SENDER` |
+| Google Maps API (futuro) | Geolocation real | Atualmente mockada |
+| Serpro / Receita Federal (futuro) | Validação de CNPJ | Atualmente mockada |
+
+## Diretórios
+
+| Pasta | Responsabilidade | Doc |
+|---|---|---|
+| `app/core/` | Config + DB | [modules/core.md](modules/core.md) |
+| `app/integrations/` + `app/schemas/` | Cliente e schemas Infobip | [modules/integrations.md](modules/integrations.md) |
+| `app/services/` | Camada de aplicação | [modules/services.md](modules/services.md) |
+| `app/modules/` | Etapas do funil + helpers | [modules/modules.md](modules/modules.md) |
+| `app/bot_engine.py` | Orquestrador FSM | [modules/bot_engine.md](modules/bot_engine.md) |
