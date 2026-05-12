@@ -186,7 +186,7 @@ Itens que valeria endereçar (ordem de impacto):
 
 3. **Sem retry / dead-letter queue** em envios outbound. Falha de Infobip = mensagem perdida silenciosamente.
 
-4. **Webhook sem autenticação** — `POST /bot` aceita qualquer request. Configurar Basic Auth no portal Infobip e validar via `Depends(HTTPBasic())` no FastAPI.
+4. ~~**Webhook sem autenticação**~~ — **Resolvido**. `POST /bot` agora valida `Basic Auth` via `verify_infobip_basic_auth` (dependência FastAPI). Credenciais em Key Vault (`INFOBIP-WEBHOOK-USER` + `INFOBIP-WEBHOOK-PASSWORD`). Comparação `secrets.compare_digest` (constant-time). Fail-safe: 503 se as credenciais não estiverem configuradas; 401 se inválidas.
 
 5. **Mocks em produção** — `ParceiroService.validar_cnpj_api`, `buscar_cidade_por_cep`, cálculo de geolocation. Trocar por integrações reais antes de prod.
 

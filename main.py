@@ -3,9 +3,11 @@
 from app.core.telemetry import configure_telemetry
 configure_telemetry()
 
+import secrets
 import time
-from fastapi import FastAPI, BackgroundTasks
+from fastapi import Depends, FastAPI, BackgroundTasks, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel
 from typing import List
 
@@ -118,16 +120,79 @@ def enviar_sequencia_background(mensagens, sender_id):
 
 
 # ==============================================================================
-# 3. ROTAS
+# 3. AUTENTICACAO DO WEBHOOK INFOBIP
+# ==============================================================================
+# A Infobip envia o header Authorization: Basic <base64(user:password)> em todo
+# webhook inbound, conforme configurado no portal (perfil de seguranca Basic Auth).
+# Validamos com secrets.compare_digest (constant-time, previne timing attacks).
+#
+# Fail-safe: se as credenciais nao estiverem configuradas no Key Vault, bloqueamos
+# TUDO com 503 + log critical. Sem auth configurada == sem servico.
+_basic_auth = HTTPBasic(auto_error=True)
+
+
+def verify_infobip_basic_auth(
+    credentials: HTTPBasicCredentials = Depends(_basic_auth),
+) -> None:
+    expected_user = settings.get_secret("INFOBIP-WEBHOOK-USER")
+    expected_password = settings.get_secret("INFOBIP-WEBHOOK-PASSWORD")
+
+    if not expected_user or not expected_password:
+        logger.critical(
+            "credenciais do webhook nao configuradas",
+            extra={"custom_dimensions": {
+                ld.OPERATION: "webhook_auth",
+                ld.MISSING_SECRETS: [
+                    k for k, v in {
+                        "INFOBIP-WEBHOOK-USER": expected_user,
+                        "INFOBIP-WEBHOOK-PASSWORD": expected_password,
+                    }.items() if not v
+                ],
+            }},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="webhook auth not configured",
+        )
+
+    user_ok = secrets.compare_digest(
+        credentials.username.encode("utf-8"),
+        expected_user.encode("utf-8"),
+    )
+    password_ok = secrets.compare_digest(
+        credentials.password.encode("utf-8"),
+        expected_password.encode("utf-8"),
+    )
+
+    if not (user_ok and password_ok):
+        logger.warning(
+            "tentativa de acesso ao webhook com credenciais invalidas",
+            extra={"custom_dimensions": {
+                ld.OPERATION: "webhook_auth",
+                ld.RESULT: "unauthorized",
+            }},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="invalid credentials",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+
+
+# ==============================================================================
+# 4. ROTAS
 # ==============================================================================
 @app.get("/")
 def health_check():
     return {"status": "online", "environment": "Azure Production"}
 
 
-@app.post("/bot")
+@app.post("/bot", dependencies=[Depends(verify_infobip_basic_auth)])
 async def chat_webhook(payload: InfobipInboundPayload, background_tasks: BackgroundTasks):
-    """Webhook principal que recebe mensagens do WhatsApp via Infobip."""
+    """Webhook principal que recebe mensagens do WhatsApp via Infobip.
+
+    Autenticado via Basic Auth (configurado no portal Infobip + Key Vault).
+    """
     for result in payload.results:
         sender_id = result.sender
         message_body = ""
