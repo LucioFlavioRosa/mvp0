@@ -1,14 +1,17 @@
 from datetime import datetime
 from app.core.database import DatabaseManager
-from app.services.twilio_service import TwilioService
+from app.services.whatsapp_service import WhatsAppService
 
 class DispatchService:
     def __init__(self):
         self.db = DatabaseManager()
-        self.twilio = TwilioService()
-        
-        # SID do Template
-        self.TEMPLATE_OFERTA = "HXe06780de5d2ec3b456c82275071f6bfc" 
+        self.whatsapp = WhatsAppService()
+
+        # Nome do template cadastrado no portal Infobip.
+        # ⚠ REVISAR MANUALMENTE: cadastrar o template no portal antes do deploy
+        # (mesmos 9 placeholders na ordem nome/atividade/numero/rua/bairro/data/obs/valor/urgencia)
+        # e ajustar este nome para o que foi definido no portal.
+        self.TEMPLATE_OFERTA = "oferta_servico"
 
     def enviar_oferta_para_prestadores(self, lista_uuids, pedido_uuid):
         """
@@ -62,27 +65,24 @@ class DispatchService:
                 sucesso_db = self.db.execute_write(sql_disparo, (pedido_uuid, parceiro_uuid))
 
                 if sucesso_db:
-                    # B) MONTA VARIÁVEIS
-                    variaveis_template = {
-                        '1': primeiro_nome,  
-                        '2': atividade,      
-                        '3': str(numero),    
-                        '4': rua,            
-                        '5': bairro,         
-                        '6': data_fmt,       
-                        '7': observacao,     
-                        '8': valor_fmt,      
-                        '9': urgencia        
-                    }
+                    # B) MONTA PLACEHOLDERS (lista posicional, padrão Infobip)
+                    placeholders = [
+                        primeiro_nome,
+                        atividade,
+                        str(numero),
+                        rua,
+                        bairro,
+                        data_fmt,
+                        observacao,
+                        valor_fmt,
+                        urgencia,
+                    ]
 
                     # C) ENVIA WHATSAPP
                     msg_template = {
                         'tipo': 'template',
-                        'sid': self.TEMPLATE_OFERTA,
-                        'variaveis': variaveis_template
+                        'template_name': self.TEMPLATE_OFERTA,
+                        'placeholders': placeholders,
                     }
-                    
-                    self.twilio.enviar_resposta(whatsapp_id, msg_template)
-                    count_envios += 1
 
-        return {"status": "success", "enviados": count_envios}
+  
