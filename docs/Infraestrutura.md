@@ -194,10 +194,11 @@ A tabela abaixo mapeia os dados críticos identificados no ER Diagram e sua estr
 
 ## 4. Fluxos de Integração e Segurança de Rede
 
-### 4.1 Integração com WhatsApp (Twilio)
-Para garantir que apenas a Twilio possa invocar nossos Webhooks e evitar ataques de *Replay* ou *Man-in-the-Middle*:
-1.  **Validação de Assinatura:** O Backend valida o header `X-Twilio-Signature` de cada requisição usando o Auth Token armazenado no **Azure Key Vault**.
+### 4.1 Integração com WhatsApp (Infobip)
+Para garantir que apenas o Infobip possa invocar nossos Webhooks e evitar ataques de *Replay* ou *Man-in-the-Middle*:
+1.  **Basic Auth no Webhook:** No portal Infobip, o perfil de segurança Basic Auth é vinculado ao evento `INBOUND_MESSAGE` e à URL de roteamento `/bot`. No backend, a dependência FastAPI `verify_infobip_basic_auth` (em `main.py`) lê `INFOBIP-WEBHOOK-USER` e `INFOBIP-WEBHOOK-PASSWORD` do **Azure Key Vault** e valida cada requisição com `secrets.compare_digest` (constant-time, resistente a timing attacks). Fail-safe: retorna 503 se as credenciais não estão configuradas, 401 se inválidas.
 2.  **HTTPS:** Todo tráfego é criptografado em trânsito (TLS 1.2+).
+3.  **Histórico:** A integração anterior (Twilio) usava validação de assinatura via header `X-Twilio-Signature`. Substituída por Basic Auth na migração Twilio→Infobip + implementação no PR `feat/webhook-basic-auth`.
 
 ### 4.2 Integração com Legado (SAP/Oracle/IDW)
 A comunicação com os sistemas *on-premise* ou legados não é exposta à internet pública.

@@ -82,6 +82,8 @@ Variáveis de ambiente são lidas diretamente; segredos vivem no Azure Key Vault
 | Key Vault | `INFOBIP-API-KEY` | Auth da API Infobip |
 | Key Vault | `INFOBIP-BASE-URL` | Endpoint do tenant Infobip (`https://<id>.api.infobip.com`) |
 | Key Vault | `INFOBIP-SENDER` | Número remetente E164 sem prefixo |
+| Key Vault | `INFOBIP-WEBHOOK-USER` | Usuário Basic Auth do webhook `/bot` (deve bater com o portal Infobip) |
+| Key Vault | `INFOBIP-WEBHOOK-PASSWORD` | Senha Basic Auth do webhook `/bot` |
 | Key Vault | `DB-SERVER` | Endereço do SQL Server |
 | Key Vault | `DB-NAME` | Nome do banco |
 | Key Vault | `DB-USER` | Usuário SQL |
