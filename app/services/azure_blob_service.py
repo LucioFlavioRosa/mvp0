@@ -1,6 +1,11 @@
 import requests
 from azure.storage.blob import BlobServiceClient
+
 from app.core.config import Settings
+from app.core.telemetry import get_logger
+from app.core import log_dimensions as ld
+
+logger = get_logger(__name__)
 
 
 class AzureBlobService:
@@ -11,17 +16,29 @@ class AzureBlobService:
         # Antes (Twilio): TWILIO-ACCOUNT-SID + TWILIO-AUTH-TOKEN como Basic Auth.
         self.infobip_api_key = settings.get_secret("INFOBIP-API-KEY")
 
-        if not all([self.azure_connection_string, self.infobip_api_key]):
-            print("[AzureBlobService] AVISO: Variaveis de ambiente nao encontradas!")
-            print(f"   - Azure: {'OK' if self.azure_connection_string else 'Faltando'}")
-            print(f"   - Infobip API Key: {'OK' if self.infobip_api_key else 'Faltando'}")
+        missing = [k for k, v in {
+            "CONNECTION-STRING-AZURE-STORAGE": self.azure_connection_string,
+            "INFOBIP-API-KEY": self.infobip_api_key,
+        }.items() if not v]
+
+        if missing:
+            logger.warning("AzureBlobService: credenciais ausentes",
+                           extra={"custom_dimensions": {
+                               ld.OPERATION: "startup",
+                               ld.COMPONENT: "azure_blob",
+                               ld.MISSING_SECRETS: missing,
+                           }})
             self.blob_service_client = None
             return
 
         try:
             self.blob_service_client = BlobServiceClient.from_connection_string(self.azure_connection_string)
-        except Exception as e:
-            print(f"[Azure] Erro de Conexao na Inicializacao: {e}")
+        except Exception:
+            logger.error("erro de conexao com Azure Blob", exc_info=True,
+                         extra={"custom_dimensions": {
+                             ld.OPERATION: "startup",
+                             ld.COMPONENT: "azure_blob",
+                         }})
             self.blob_service_client = None
 
     def upload_from_url(self, media_url, container_name, blob_name):
@@ -29,16 +46,20 @@ class AzureBlobService:
 
         REVISAR MANUALMENTE: dependendo da config do tenant Infobip, as URLs
         de midia podem ser publicas (sem auth) ou exigir o header
-        Authorization: App <api_key>. Usamos a versao com auth por default
-        (caso mais seguro). Se receber HTTP 401/403 ao baixar, remover o
-        argumento `headers` desta chamada.
+        Authorization: App <api_key>. Usamos a versao com auth por default.
+        Se receber HTTP 401/403 ao baixar, remover o argumento headers.
         """
         if not self.blob_service_client:
-            print("Cliente Azure nao inicializado (Verifique suas credenciais).")
+            logger.warning("Azure blob client nao inicializado",
+                           extra={"custom_dimensions": {ld.OPERATION: "upload_media"}})
             return None
 
         try:
-            print(f"Baixando midia do Infobip: {media_url}...")
+            logger.debug("baixando midia do Infobip",
+                         extra={"custom_dimensions": {
+                             ld.OPERATION: "download_media",
+                             "media_url": media_url,
+                         }})
             response = requests.get(
                 media_url,
                 stream=True,
@@ -50,11 +71,25 @@ class AzureBlobService:
                     container_client.create_container()
                 blob_client = container_client.get_blob_client(blob_name)
                 blob_client.upload_blob(response.content, overwrite=True)
-                print(f"Upload Azure Sucesso: {blob_client.url}")
+                logger.info("upload Azure Blob concluido",
+                            extra={"custom_dimensions": {
+                                ld.OPERATION: "upload_media",
+                                "container": container_name,
+                                "blob_name": blob_name,
+                            }})
                 return blob_client.url
             else:
-                print(f"Erro ao baixar midia do Infobip. Status: {response.status_code}")
+                logger.warning("falha HTTP ao baixar midia",
+                               extra={"custom_dimensions": {
+                                   ld.OPERATION: "download_media",
+                                   ld.EXTERNAL_STATUS: response.status_code,
+                                   ld.EXTERNAL_SERVICE: "infobip",
+                               }})
                 return None
-        except Exception as e:
-            print(f"Erro critico no upload: {e}")
+        except Exception:
+            logger.error("erro critico no upload", exc_info=True,
+                         extra={"custom_dimensions": {
+                             ld.OPERATION: "upload_media",
+                             "container": container_name,
+                         }})
             return None

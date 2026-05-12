@@ -1,22 +1,30 @@
+# Telemetria DEVE ser inicializada antes de criar FastAPI app
+# (caso contrario, auto-instrumentacao nao pega o app).
+from app.core.telemetry import configure_telemetry
+configure_telemetry()
+
 import time
-from fastapi import FastAPI, BackgroundTasks, HTTPException
+from fastapi import FastAPI, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List
 
-# Imports da sua aplicação (Certifique-se que as pastas app/ existem)
 from app.bot_engine import BotEngine
 from app.services.dispatch_service import DispatchService
 from app.services.whatsapp_service import DEFAULT_TEMPLATE_LANGUAGE
 from app.integrations.infobip import InfobipClient
 from app.schemas.infobip_webhook import InfobipInboundPayload
 from app.core.config import Settings
+from app.core.telemetry import get_logger, mask_pii, correlation_id_middleware
+from app.core import log_dimensions as ld
+
+logger = get_logger(__name__)
 
 # ==============================================================================
-# 1. INICIALIZAÇÃO E VARIÁVEIS DE AMBIENTE
+# 1. INICIALIZACAO
 # ==============================================================================
 
-app = FastAPI(title="Bot Águas do Pará", version="1.0.0")
+app = FastAPI(title="Bot Aguas do Para", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -25,15 +33,19 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.middleware("http")(correlation_id_middleware)
 
 settings = Settings()
 
 try:
     bot = BotEngine()
     dispatch_service = DispatchService()
-    print("OK Motores inicializados (BotEngine e DispatchService).")
-except Exception as e:
-    print(f"ERRO critico ao iniciar motores: {e}")
+    logger.info("motores inicializados", extra={"custom_dimensions": {
+        ld.OPERATION: "startup", ld.COMPONENT: "engines",
+    }})
+except Exception:
+    logger.critical("falha critica ao iniciar motores", exc_info=True,
+                    extra={"custom_dimensions": {ld.OPERATION: "startup"}})
 
 try:
     api_key = settings.get_secret("INFOBIP-API-KEY")
@@ -42,13 +54,23 @@ try:
 
     if api_key and base_url and sender_number:
         client = InfobipClient(api_key=api_key, base_url=base_url)
-        print("OK Cliente Infobip autenticado.")
+        logger.info("cliente Infobip autenticado", extra={"custom_dimensions": {
+            ld.OPERATION: "startup", ld.COMPONENT: "infobip",
+        }})
     else:
         client = None
-        print("AVISO: Credenciais Infobip nao encontradas no Key Vault.")
-except Exception as e:
+        missing = [k for k, v in {
+            "INFOBIP-API-KEY": api_key,
+            "INFOBIP-BASE-URL": base_url,
+            "INFOBIP-SENDER": sender_number,
+        }.items() if not v]
+        logger.warning("credenciais Infobip ausentes", extra={"custom_dimensions": {
+            ld.OPERATION: "startup", ld.MISSING_SECRETS: missing,
+        }})
+except Exception:
     client = None
-    print(f"ERRO ao iniciar Infobip: {e}")
+    logger.error("erro ao iniciar Infobip", exc_info=True,
+                 extra={"custom_dimensions": {ld.OPERATION: "startup"}})
 
 
 class DispatchRequest(BaseModel):
@@ -57,12 +79,13 @@ class DispatchRequest(BaseModel):
 
 
 # ==============================================================================
-# 2. FUNCAO DE BACKGROUND
+# 2. BACKGROUND
 # ==============================================================================
 def enviar_sequencia_background(mensagens, sender_id):
     """Processa lista de mensagens com delay, sem travar a resposta HTTP."""
     if not client:
-        print("ERRO Background: Cliente Infobip offline.")
+        logger.warning("background: cliente Infobip offline",
+                       extra={"custom_dimensions": {ld.OPERATION: "send_sequence"}})
         return
 
     try:
@@ -86,8 +109,12 @@ def enviar_sequencia_background(mensagens, sender_id):
                     language=item.get('language', DEFAULT_TEMPLATE_LANGUAGE),
                     placeholders=item.get('placeholders') or [],
                 )
-    except Exception as e:
-        print(f"Erro na tarefa de Background: {e}")
+    except Exception:
+        logger.error("falha no envio em background", exc_info=True,
+                     extra={"custom_dimensions": {
+                         ld.OPERATION: "send_sequence",
+                         ld.SENDER_HASH: mask_pii(sender_id),
+                     }})
 
 
 # ==============================================================================
@@ -95,21 +122,12 @@ def enviar_sequencia_background(mensagens, sender_id):
 # ==============================================================================
 @app.get("/")
 def health_check():
-    """Rota simples para o Azure verificar se o app esta vivo."""
     return {"status": "online", "environment": "Azure Production"}
 
 
 @app.post("/bot")
 async def chat_webhook(payload: InfobipInboundPayload, background_tasks: BackgroundTasks):
-    """Webhook principal que recebe mensagens do WhatsApp via Infobip.
-
-    Diferente do Twilio (form-data + TwiML), o Infobip envia JSON estruturado
-    e NAO aceita resposta via body - a resposta vai como chamada outbound
-    separada via InfobipClient.
-
-    REVISAR MANUALMENTE: este endpoint e publico. Considere configurar
-    Basic Auth no portal Infobip e validar no FastAPI antes do deploy.
-    """
+    """Webhook principal que recebe mensagens do WhatsApp via Infobip."""
     for result in payload.results:
         sender_id = result.sender
         message_body = ""
@@ -121,16 +139,29 @@ async def chat_webhook(payload: InfobipInboundPayload, background_tasks: Backgro
             media_url = result.message.url
             message_body = (result.message.caption or "").strip()
 
-        print(f"Msg recebida de {sender_id}: {message_body}")
+        logger.info("webhook inbound", extra={"custom_dimensions": {
+            ld.OPERATION: "webhook_inbound",
+            ld.SENDER_HASH: mask_pii(sender_id),
+            ld.MESSAGE_TYPE: result.message.type,
+            ld.MESSAGE_LEN: len(message_body),
+        }})
 
         try:
             resposta = bot.processar_mensagem(sender_id, message_body, media_url)
-        except Exception as e:
-            print(f"Erro no BotEngine: {e}")
+        except Exception:
+            logger.error("erro no bot engine", exc_info=True,
+                         extra={"custom_dimensions": {
+                             ld.OPERATION: "process_message",
+                             ld.SENDER_HASH: mask_pii(sender_id),
+                         }})
             continue
 
         if not client:
-            print("Cliente Infobip offline - nao foi possivel responder.")
+            logger.warning("cliente Infobip offline - sem resposta",
+                           extra={"custom_dimensions": {
+                               ld.OPERATION: "webhook_inbound",
+                               ld.SENDER_HASH: mask_pii(sender_id),
+                           }})
             continue
 
         tipo = resposta.get('tipo')
@@ -179,21 +210,31 @@ async def chat_webhook(payload: InfobipInboundPayload, background_tasks: Backgro
                     media_url=resposta['url'],
                     caption=resposta.get('legenda') or None,
                 )
-        except Exception as e:
-            # REVISAR MANUALMENTE: sem fallback TwiML, falhas aqui significam
-            # que o usuario NAO recebe resposta. Considere retry com tenacity
-            # ou enfileiramento para reprocessar.
-            print(f"Falha no envio via Infobip: {e}")
+        except Exception:
+            logger.error("falha no envio outbound via Infobip", exc_info=True,
+                         extra={"custom_dimensions": {
+                             ld.OPERATION: "send_response",
+                             ld.TIPO: tipo,
+                             ld.SENDER_HASH: mask_pii(sender_id),
+                         }})
 
     return {"status": "ok"}
 
 
 @app.post("/api/dispatch")
 async def dispatch_order(data: DispatchRequest):
-    print(f"API Dispatch: Pedido {data.pedido_uuid} -> {len(data.parceiros)} parceiros.")
+    logger.info("dispatch recebido", extra={"custom_dimensions": {
+        ld.OPERATION: "dispatch",
+        ld.PEDIDO_ID: data.pedido_uuid,
+        "parceiros_count": len(data.parceiros),
+    }})
     try:
         result = dispatch_service.enviar_oferta_para_prestadores(data.parceiros, data.pedido_uuid)
         return result
-    except Exception as e:
-        print(f"Erro API Dispatch: {e}")
-        return {"status": "error", "message": str(e)}
+    except Exception:
+        logger.error("erro em dispatch", exc_info=True,
+                     extra={"custom_dimensions": {
+                         ld.OPERATION: "dispatch",
+                         ld.PEDIDO_ID: data.pedido_uuid,
+                     }})
+        return {"status": "error", "message": "internal_error"}

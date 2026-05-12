@@ -1,19 +1,15 @@
-"""
-Serviço de envio de mensagens WhatsApp via Infobip.
-
-Interface pública (`enviar_resposta`) preservada da implementação antiga
-com Twilio, pra que `DispatchService` e outros chamadores não precisem
-mudar lógica de negócio. Internamente usa o `InfobipClient`.
-"""
+"""Servico de envio de mensagens WhatsApp via Infobip."""
 
 import threading
 import time
 
 from app.core.config import Settings
+from app.core.telemetry import get_logger, mask_pii
+from app.core import log_dimensions as ld
 from app.integrations.infobip import InfobipClient
 
-# Idioma padrão dos templates cadastrados no portal Infobip.
-# Ajustar se os templates forem em outro idioma.
+logger = get_logger(__name__)
+
 DEFAULT_TEMPLATE_LANGUAGE = "pt_BR"
 
 
@@ -28,15 +24,22 @@ class WhatsAppService:
             self.client = InfobipClient(api_key=api_key, base_url=base_url)
         else:
             self.client = None
-            print("⚠️ WhatsAppService: Credenciais Infobip não encontradas.")
+            missing = [k for k, v in {
+                "INFOBIP-API-KEY": api_key,
+                "INFOBIP-BASE-URL": base_url,
+                "INFOBIP-SENDER": self.sender,
+            }.items() if not v]
+            logger.warning("WhatsAppService: credenciais ausentes",
+                           extra={"custom_dimensions": {
+                               ld.OPERATION: "startup",
+                               ld.MISSING_SECRETS: missing,
+                           }})
 
     def enviar_resposta(self, to_number, resposta_bot):
         if not self.client:
             return
 
-        # Infobip usa E164 sem prefixo — strip "whatsapp:" caso o caller passe.
         to_number = _strip_whatsapp_prefix(to_number)
-
         tipo = resposta_bot.get("tipo")
 
         if tipo == "sequencia":
@@ -58,9 +61,8 @@ class WhatsAppService:
             self._enviar_unico(to_number, msg)
 
     def _enviar_unico(self, to_number, msg):
+        tipo = msg.get("tipo")
         try:
-            tipo = msg.get("tipo")
-
             if tipo == "texto" or tipo == "combo_inicial":
                 conteudo = msg.get("conteudo") or msg.get("texto")
                 if conteudo:
@@ -71,14 +73,11 @@ class WhatsAppService:
                     )
 
             elif tipo == "template":
-                # Infobip usa templateName (string) + placeholders (lista posicional),
-                # em vez do content_sid + content_variables (dict) do Twilio.
                 template_name = msg.get("template_name") or msg.get("sid")
                 placeholders = msg.get("placeholders") or _dict_to_positional_list(
                     msg.get("variaveis", {})
                 )
                 language = msg.get("language", DEFAULT_TEMPLATE_LANGUAGE)
-
                 self.client.send_template(
                     sender=self.sender,
                     to=to_number,
@@ -97,12 +96,21 @@ class WhatsAppService:
                     caption=legenda or None,
                 )
 
-            print(f"✅ Infobip: Mensagem enviada para {to_number}")
+            logger.info("mensagem enviada via Infobip", extra={"custom_dimensions": {
+                ld.OPERATION: "send_message",
+                "to_hash": mask_pii(to_number),
+                ld.TIPO: tipo,
+                ld.EXTERNAL_SERVICE: "infobip",
+            }})
 
-        except Exception as e:
-            # Infobip retorna 200 com erro no body em alguns casos, mas erros HTTP
-            # 4xx/5xx chegam aqui via requests.raise_for_status no InfobipClient.
-            print(f"🔥 Erro WhatsAppService ao enviar para {to_number}: {e}")
+        except Exception:
+            logger.error("erro ao enviar via Infobip", exc_info=True,
+                         extra={"custom_dimensions": {
+                             ld.OPERATION: "send_message",
+                             "to_hash": mask_pii(to_number),
+                             ld.TIPO: tipo,
+                             ld.EXTERNAL_SERVICE: "infobip",
+                         }})
 
 
 def _strip_whatsapp_prefix(number: str) -> str:
@@ -111,16 +119,10 @@ def _strip_whatsapp_prefix(number: str) -> str:
     return number.lstrip("+") if number else number
 
 
-def _dict_to_positional_list(variaveis: dict) -> list[str]:
-    """Converte {'1': 'a', '2': 'b'} em ['a', 'b'] ordenado por chave numérica.
-
-    Fallback pra retrocompatibilidade com chamadores que ainda passam dict
-    no estilo Twilio. Idealmente, callers já enviam `placeholders` direto.
-    """
+def _dict_to_positional_list(variaveis: dict) -> list:
     if not variaveis:
         return []
     try:
         return [str(variaveis[str(i)]) for i in sorted(int(k) for k in variaveis.keys())]
     except (ValueError, KeyError):
-        # Chaves não-numéricas: cai pra ordem de inserção
         return [str(v) for v in variaveis.values()]
