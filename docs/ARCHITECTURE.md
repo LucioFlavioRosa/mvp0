@@ -160,6 +160,16 @@ Azure SQL Serverless pode demorar até 1 minuto pra acordar de pausa. Sem retry,
 
 Antes da migração Twilio→Infobip, o webhook respondia com TwiML como salvaguarda. Hoje, se a chamada outbound falha, o parceiro **não recebe nada** — só sai log de erro. ⚠ Endereçar com retry (`tenacity`) ou queue. Ver `MIGRATION_NOTES.md` item 3.
 
+### Autenticação do webhook via Basic Auth + comparação constant-time
+
+A Infobip envia `Authorization: Basic <base64(user:password)>` em cada request a `POST /bot`, conforme perfil de segurança configurado no portal. A dependência FastAPI `verify_infobip_basic_auth` (em `main.py`) lê `INFOBIP-WEBHOOK-USER` e `INFOBIP-WEBHOOK-PASSWORD` do Key Vault e valida com `secrets.compare_digest` (constant-time — previne timing attacks).
+
+**Trade-off intencional:** o endpoint é **fail-safe**, não fail-open:
+- Se as credenciais **não estão configuradas** no Key Vault, retorna **503** + log critical. Sem auth configurada == sem serviço.
+- Se as credenciais **estão configuradas mas a request é inválida**, retorna **401** + log warning.
+
+Justificativa: erro humano de configuração (esquecer de provisionar o secret após o deploy) **não pode** abrir o webhook pro mundo. Forçar 503 obriga o sysadmin a configurar antes do go-live.
+
 ### Telemetria com correlation_id middleware e PII masking
 
 Toda request ganha um `operation_id` (gerado por `correlation_id_middleware` em `app/core/telemetry.py`) que é injetado em todas as `custom_dimensions` dos logs subsequentes via `logging.Filter`. Permite query Kusto tipo "todos os logs desta mensagem" no App Insights.

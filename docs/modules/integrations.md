@@ -79,4 +79,4 @@ class InfobipInboundPayload(BaseModel):
 
 - **Lógica de envio com retry / fila** — caller é responsável.
 - **Status callbacks / delivery reports** — endpoint separado no Infobip, não modelado.
-- **Auth do webhook** (Basic Auth) — não implementado. Ver `MIGRATION_NOTES.md` item 2.
+- **Auth do webhook** — implementado via Basic Auth. A dependência FastAPI `verify_infobip_basic_auth` (em `main.py`) valida `Authorization: Basic ...` em cada request a `POST /bot`, comparando `secrets.compare_digest` contra `INFOBIP-WEBHOOK-USER`/`INFOBIP-WEBHOOK-PASSWORD` do Key Vault. Fail-safe: 503 se credenciais ausentes, 401 se inválidas.
