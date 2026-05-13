@@ -46,7 +46,7 @@ Lista de componentes:
 - **`main.py` (FastAPI)** — expõe `/bot` (webhook inbound) e `/api/dispatch` (API de notificação). Faz parsing, delega ao `BotEngine` ou `DispatchService`, e dispara o envio outbound via `InfobipClient`.
 - **`BotEngine`** (`app/bot_engine.py`) — orquestrador FSM. Carrega sessão, decide a etapa, salva estado, retorna resposta. Detalhes em [`modules/bot_engine.md`](modules/bot_engine.md).
 - **Modules** (`app/modules/`) — etapas do funil de cadastro (`pessoal`, `endereco`, `habilidades`, `veiculos`, `disponibilidade`, `documentos`, `oferta`) + `onboarding` (entrada/decisões iniciais). Detalhes em [`modules/modules.md`](modules/modules.md).
-- **Services Layer** (`app/services/`) — `WhatsAppService`, `DispatchService`, `AzureBlobService`, `ParceiroService`, `SessionService`. Encapsulam DB e integrações externas. Detalhes em [`modules/services.md`](modules/services.md).
+- **Services Layer** (`app/services/`) — `WhatsAppService`, `DispatchService`, `AzureBlobService`, `SessionService`. Encapsulam integrações externas (WhatsApp via Infobip, Blob Storage, dispatch). Persistência do perfil do parceiro fica direto nas etapas (`app/modules/etapa_*.py`) via `DatabaseManager`. Detalhes em [`modules/services.md`](modules/services.md).
 - **Integrations** (`app/integrations/` + `app/schemas/`) — `InfobipClient` (HTTP wrapper) e schemas Pydantic do payload de webhook. Detalhes em [`modules/integrations.md`](modules/integrations.md).
 - **Core** (`app/core/`) — `Settings` (Key Vault singleton), `DatabaseManager` (pyodbc + retry), `telemetry` (Application Insights bootstrap + `mask_pii` + `correlation_id_middleware`) e `log_dimensions` (vocabulário canônico de dimensions). Detalhes em [`modules/core.md`](modules/core.md).
 
@@ -200,7 +200,7 @@ Itens que valeria endereçar (ordem de impacto):
 
 4. ~~**Webhook sem autenticação**~~ — **Resolvido**. `POST /bot` agora valida `Basic Auth` via `verify_infobip_basic_auth` (dependência FastAPI). Credenciais em Key Vault (`INFOBIP-WEBHOOK-USER` + `INFOBIP-WEBHOOK-PASSWORD`). Comparação `secrets.compare_digest` (constant-time). Fail-safe: 503 se as credenciais não estiverem configuradas; 401 se inválidas.
 
-5. **Mocks em produção** — `ParceiroService.validar_cnpj_api`, `buscar_cidade_por_cep`, cálculo de geolocation. Trocar por integrações reais antes de prod.
+5. **Mock de validação de CNPJ em produção** — inline em `etapa_pessoal.processar_cnpj` (regra fake "termina em 0000 é inválido"). Trocar por integração real (Serpro/Receita Federal) antes de prod. ViaCEP e Google Maps já são chamadas reais em `etapa_endereco.py`.
 
 6. **CORS aberto** — `allow_origins=["*"]` em `main.py:22-28`. Apertar antes do go-live.
 

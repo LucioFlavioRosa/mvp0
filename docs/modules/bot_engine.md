@@ -149,5 +149,5 @@ Indiretamente, via etapas e services, toca `PARCEIROS_PERFIL`, `PEDIDOS_DISPAROS
 
 - **Validação de campo** → cada `EtapaX.processar_<campo>`
 - **Envio de mensagens** → `WhatsAppService` ou `InfobipClient` (chamado por `main.chat_webhook`)
-- **Persistência de dados do parceiro** → `ParceiroService`
+- **Persistência de dados do parceiro** → direto nas etapas (`etapa_pessoal.py`, `etapa_endereco.py`) via `DatabaseManager`
 - **Templates de WhatsApp** → cadastrados no portal Infobip

@@ -73,7 +73,7 @@ class EtapaPessoal:
 **Pontos não óbvios:**
 
 - Validação acontece **dentro de cada `processar_<campo>`**: regex/limpeza + chamada de service. Em caso de input inválido, a etapa retorna o **mesmo step** com mensagem de erro — o `BotEngine` não salva (ver lógica em `_save_session`).
-- Cada etapa pode chamar **múltiplos services** (ex: `EtapaEndereco.processar_cep` chama `ParceiroService.buscar_cidade_por_cep` + `salvar_cep_cidade`).
+- Cada etapa fala com o banco direto via `DatabaseManager` (não há camada de service para persistência do parceiro). Ex: `EtapaEndereco.processar_cep` consulta ViaCEP (`_consultar_viacep`) e faz `UPDATE PARCEIROS_PERFIL` inline.
 - **`reenviar_etapa_atual`** existe nas etapas que suportam retomada após timeout. Recebe o `step_backup` salvo na sessão e devolve a pergunta original (sem perder dados já preenchidos).
 
 ## `EtapaOferta`
@@ -95,30 +95,11 @@ class EtapaOferta:
 - **Prioridade**: oferta sobrescreve qualquer step ativo do cadastro. Se o user estava digitando CPF e cai uma oferta, a oferta vence.
 - O step retornado por `processar_resposta` **não é salvo na sessão** — o BotEngine retorna `resposta` direto sem atualizar `CHAT_SESSIONS` no caminho de oferta.
 
-## `GeradorResposta` (`common.py`)
-
-```python
-class GeradorResposta:
-    @staticmethod
-    def texto(msg: str, proximo_passo: str) -> tuple[str, dict]: ...
-    @staticmethod
-    def media(legenda: str, url_arquivo: str, proximo_passo: str) -> tuple[str, dict]: ...
-    @staticmethod
-    def template(sid: str, variaveis: dict, proximo_passo: str) -> tuple[str, dict]: ...
-```
-
-**Como é usado:**
-
-- Helper estático pra evitar duplicação do dict de resposta em cada etapa.
-
-**Pontos não óbvios:**
-
-- **`template(sid, variaveis, ...)`** ainda usa o nome antigo (`sid` + `variaveis`). ⚠ Após migração Infobip, deveria ser `template_name` + `placeholders`. Não foi atualizado no PR de migração.
-- **`media`** historicamente tinha docstring mencionando Twilio. Atualizar para Infobip no próximo touch nesse arquivo (cosmético).
-- Esta classe é pouco usada na prática — a maioria das etapas constrói o dict inline. Considerar deprecar ou padronizar.
-
 ## O que NÃO está aqui
 
 - **Orquestração entre etapas** → `app/bot_engine.py`
-- **Persistência** → services (`ParceiroService`, `SessionService`)
+- **Persistência do perfil do parceiro** → direto nas etapas (`etapa_pessoal.py`, `etapa_endereco.py`) via `DatabaseManager`
+- **Sessão / fluxo de entrada** → `SessionService` (`app/services/session_service.py`)
 - **Templates de WhatsApp** → cadastrados no portal Infobip (não no código)
+
+> **Nota histórica**: havia uma classe `GeradorResposta` em `app/modules/common.py` como helper estático pra padronizar o dict de resposta (`tipo: 'texto'`, `tipo: 'template'`, `tipo: 'media'`). Na prática as etapas sempre construíram o dict inline, e a classe nunca foi adotada. Removida no PR `chore/remove-parceiro-service` (junto com `ParceiroService`).

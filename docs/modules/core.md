@@ -55,7 +55,7 @@ class DatabaseManager:
 
 **Como é usado:**
 
-- Instanciado pelos services (`ParceiroService`, `SessionService`, etc) — cada service tem seu próprio manager.
+- Instanciado pelos services (`SessionService`, `DispatchService`) e diretamente pelos módulos de etapa (`etapa_pessoal`, `etapa_endereco`, etc) — cada componente tem seu próprio manager.
 - Connection string montada uma vez no `__init__` a partir dos secrets `DB-SERVER`, `DB-NAME`, `DB-USER`, `DB-PASSWORD`.
 - Não usa pool de conexões — abre/fecha conexão a cada query.
 
