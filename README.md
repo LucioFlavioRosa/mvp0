@@ -96,7 +96,8 @@ Variáveis de ambiente são lidas diretamente; segredos vivem no Azure Key Vault
 
 | Método | Rota | Descrição |
 |---|---|---|
-| `GET` | `/` | Health check (responde `{"status": "online"}`) |
+| `GET` | `/` | Liveness probe — responde 200 enquanto o processo está vivo (não checa dependências) |
+| `GET` | `/health/ready` | Readiness probe — checa SQL/Infobip/Storage/Key Vault. Retorna 200 se tudo OK, 503 se qualquer falhar. Sem auth |
 | `POST` | `/bot` | Webhook inbound do Infobip — recebe mensagens do WhatsApp (Basic Auth `INFOBIP-WEBHOOK-USER`/`PASSWORD`) |
 | `POST` | `/api/dispatch` | Backoffice notifica parceiros sobre novo pedido |
 | `GET` | `/admin/dlq` | Lista (peek) mensagens pendentes na DLQ (Basic Auth `ADMIN-USER`/`PASSWORD`) |

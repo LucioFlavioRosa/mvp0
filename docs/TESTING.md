@@ -4,11 +4,11 @@
 
 ## Visão geral
 
-A suite hoje tem **71 testes unitários** distribuídos em 9 arquivos. Cobertura global em **44%**, com cobertura cirúrgica nos caminhos críticos: autenticação, retry transient, DLQ, dispatch.
+A suite hoje tem **88 testes unitários** distribuídos em 10 arquivos. Cobertura global em **46%**, com cobertura cirúrgica nos caminhos críticos: autenticação, retry transient, DLQ, dispatch, health checks.
 
 | Métrica | Valor |
 |---|---|
-| Total de testes | 71 |
+| Total de testes | 88 |
 | Tempo de execução (suite completa) | ~1s |
 | Não-flaky em 3+ rodadas consecutivas | OK |
 | Sem dependência externa (rede, disco, DB real) | OK |
@@ -136,6 +136,12 @@ Cobre: `enqueue` happy + 2 cenários fail-safe (queue offline / `send_message` l
 Cobre: sessão nova (`START`), sessão ativa (step + dados), timeout 5 min (`START` + `step_backup`), passos terminais (sem `step_backup`), `_save_session` skipa `START`/`NO_UPDATE` e grava demais, oferta pendente intercepta fluxo de cadastro, saudação no meio do fluxo grava `step_backup`.
 
 > **Detalhe técnico**: usa `BotEngine.__new__` + injeção de atributos. Razão: `__init__` é pesado (instancia 7 módulos de etapa, alguns com Google Maps client no construtor).
+
+### `tests/unit/test_health_check.py` (17 testes)
+
+`app/core/health.py` (4 funções de check) + endpoint `GET /health/ready`.
+
+Cobre: cada um dos 4 checks (`check_database`, `check_infobip`, `check_storage`, `check_keyvault`) com 3 cenários (happy + 2 modos de falha); endpoint agregado retorna 200 quando tudo OK; endpoint retorna 503 quando 1+ dependência falha (body lista qual); endpoint é público (não exige auth — App Service readiness probe não envia credentials).
 
 ## Fixtures globais (`tests/conftest.py`)
 

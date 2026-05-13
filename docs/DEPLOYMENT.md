@@ -287,6 +287,29 @@ az webapp config set \
   --startup-file "bash startup.sh"
 ```
 
+### 5.1 Configurar health check do App Service
+
+App Service tem health check nativo que reinicia a instancia se ela ficar
+unresponsive. Apontar para `/health/ready` (readiness, NAO liveness):
+
+```bash
+az webapp config set \
+  --name $APP_NAME \
+  --resource-group rg-aguasdopara-$ENV \
+  --generic-configurations '{"healthCheckPath": "/health/ready"}'
+```
+
+Por que `/health/ready` e nao `/`?
+- `GET /` (liveness) sempre retorna 200 enquanto o processo vive. Inutil
+  para detectar SQL caido ou Storage offline.
+- `GET /health/ready` checa dependencias e retorna 503 se algo falhou.
+  App Service para de rotear trafego para a instancia ate normalizar.
+
+Trade-off: durante cold start do Azure SQL Serverless (ate ~1 min), o
+endpoint pode oscilar entre 200/503. App Service tem tolerancia padrao
+(precisa 3 falhas consecutivas para considerar unhealthy) - ajustar se
+o oscilar gerar restarts indesejados.
+
 > O `startup.sh` instala o ODBC Driver 18 (necessario para pyodbc) antes de iniciar o Gunicorn.
 
 ## 6. Permitir acesso do App Service ao SQL Server
@@ -368,9 +391,18 @@ Apos qualquer deploy, rodar:
 ```bash
 APP_URL=https://app-aegea-$ENV-brazil.azurewebsites.net
 
-# 1. Health check
+# 1. Liveness probe
 curl -i $APP_URL/
 # Esperado: HTTP/1.1 200 OK + {"status":"online","environment":"Azure Production"}
+
+# 1.1 Readiness probe - checa SQL/Infobip/Storage/Key Vault
+curl -i $APP_URL/health/ready
+# Esperado: HTTP/1.1 200 OK + {"status":"ok","checks":{"sql":{"status":"ok",...},...}}
+# Se vier 503: ler o body para identificar qual check falhou
+# - sql down: verificar firewall do SQL Server (passo 6) ou cold start do Serverless
+# - infobip down: secrets INFOBIP-* ausentes no Key Vault (passo 4)
+# - storage down: secret CONNECTION-STRING-AZURE-STORAGE ausente ou fila outbound-dlq nao existe
+# - keyvault down: Managed Identity sem permissao (passo 3) ou Key Vault inacessivel
 
 # 2. Webhook sem auth (deve negar)
 curl -i -X POST $APP_URL/bot \
