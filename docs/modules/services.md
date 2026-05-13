@@ -81,6 +81,7 @@ class AzureBlobService:
 - **⚠ URL pública vs privada**: dependendo da config do tenant Infobip, mídia inbound pode vir como URL pública (sem auth). Se receber 401/403 ao baixar, remover o header. Ver `MIGRATION_NOTES.md` item 5.
 - **Container**: criado on-demand (`create_container` se não existe). Recomendável criar previamente com policy de acesso correta.
 - **Retry transient no download**: `_download_midia` é decorado com `@transient_retry` — 2 tentativas em timeout/connection/5xx. 4xx (URL inválida, auth) loga WARNING e retorna `None` (não tenta de novo). Erro persistente retorna `None`.
+- **DLQ pós-falha**: tanto em 4xx (`attempts=1`) quanto em erro persistente pós-retry (`attempts=2`), o `_enqueue_dlq` enfileira a tentativa em `outbound-dlq` (Azure Storage Queue). Operação `download_media`, payload com `media_url`/`container_name`/`blob_name`. Recuperável via `POST /admin/dlq/retry/{id}`.
 
 ### `ParceiroService`
 
@@ -135,7 +136,7 @@ class SessionService:
 
 Itens que afetam mais de um service e valeria endereçar:
 
-- **Retry transient implementado** em chamadas HTTP externas (Infobip, Blob download, ViaCEP, Google Maps) via `app/core/retry.py`. Dead-letter queue continua pendente (sem Service Bus) — falhas persistentes perdem a mensagem.
+- **Retry transient + DLQ implementados** em chamadas HTTP externas (Infobip, Blob download, ViaCEP, Google Maps) via `app/core/retry.py` (2 tentativas, backoff exponencial). Falhas pós-retry são **persistidas na DLQ** (Azure Storage Queue `outbound-dlq`, ver `app/integrations/dlq.py`) e recuperáveis manualmente via endpoints admin `GET /admin/dlq` e `POST /admin/dlq/retry/{message_id}` (autenticados com `ADMIN-USER`/`ADMIN-PASSWORD`). Política: 1 tentativa manual por mensagem, delete obrigatório no fim — evita fila poluída com mensagens fantasmas.
 - **Mocks (Serpro, ViaCEP, Google Maps)** ainda no `ParceiroService`. ⚠ Bloqueador de prod.
 - **`time.sleep`** em vários lugares (`WhatsAppService._processar_sequencia`, `main.enviar_sequencia_background`) — segura a thread. Pra escala, considerar Service Bus + worker.
 
