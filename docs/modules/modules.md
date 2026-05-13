@@ -18,7 +18,6 @@ Quebrar o fluxo de onboarding em pedaços pequenos e isolados. Cada etapa cuida 
 | `etapa_disponibilidade.py` | `EtapaDisponibilidade` | Agenda (semana, fim de semana, feriados) |
 | `etapa_documentos.py` | `EtapaDocumentos` | CNH/RG, selfie, PIX, aceite de termos |
 | `etapa_oferta.py` | `EtapaOferta` | Interceptação de oferta pendente (resposta a dispatch) |
-| `common.py` | `GeradorResposta` | Helper estático para padronizar payloads de resposta |
 
 ## Contrato comum
 
