@@ -3,101 +3,96 @@
 
 | Metadado | Detalhe |
 | :--- | :--- |
-| **Status** | `Em Revisão - Comitê de Segurança` |
-| **Data** | `01/02/2026` |
+| **Status** | `Vigente — As-Built` |
+| **Data** | `13/05/2026` |
 | **Classificação** | `Confidencial` |
 | **Autor** | Equipe de Arquitetura |
 | **Stakeholders** | Operações, Segurança da Informação, Engenharia |
+
+> **Nota sobre escopo:** este documento descreve a arquitetura **efetivamente implementada** (as-built). Para componentes da arquitetura-alvo ainda não implementados, ver Seção 7 (Roadmap Arquitetural).
 
 ---
 
 ## 1. Resumo Executivo
 
-Esta solução visa orquestrar o ciclo de vida de prestadores de serviço terceiros (Parceiros) para a Aegea/Eurofarma, desde o *onboarding* e validação documental até a execução de ordens de serviço e pagamentos. A interface principal de interação é via **WhatsApp (Twilio)**, suportada por uma arquitetura *Cloud-Native* no Azure.
+Esta solução orquestra o ciclo de vida de prestadores de serviço terceiros (Parceiros) para a Aegea/Eurofarma, desde o *onboarding* e validação documental até o disparo de ordens de serviço. A interface principal de interação é via **WhatsApp (API Infobip)**, suportada por uma arquitetura *PaaS* no Azure.
 
-Este documento detalha a topologia da infraestrutura, o modelo de dados e, principalmente, os controles de segurança aplicados para garantir conformidade com a LGPD e as políticas de InfoSec corporativas.
+Este documento detalha a topologia da infraestrutura, o modelo de dados e os controles de segurança implementados para garantir conformidade com a LGPD e as políticas de InfoSec corporativas.
 
 ---
 
-## 2. Diagrama de Infraestrutura & Segurança
+## 2. Diagrama de Infraestrutura & Segurança (As-Built)
 
-A arquitetura segue o padrão de **Segurança em Camadas (Defense in Depth)**, utilizando serviços PaaS gerenciados para reduzir a superfície de ataque e segregar redes públicas de privadas.
+A arquitetura atual usa serviços PaaS gerenciados do Azure, com **Managed Identity** para acesso a segredos e **Basic Auth** no webhook inbound. Componentes adicionais (WAF, isolamento de VNET, frontend admin) estão previstos no Roadmap (Seção 7) mas não foram implementados ainda.
 
 ```mermaid
 flowchart TB
- subgraph G1["1. Experiência & Segurança de Borda (Zero Trust)"]
+ subgraph G1["1. Experiência de Borda"]
    direction TB
-    USER@{ label: "Parceiro<br>(WhatsApp/Web)" }
-    AFD["Azure Front Door<br>(WAF Premium + DDoS Protection)"]
-    SWA["Frontend Admin<br>(Azure Static Web Apps)"]
+    USER@{ label: "Parceiro<br>(WhatsApp)" }
  end
- subgraph G2["2. Backend & Orquestração (Private VNET)"]
+ subgraph G2["2. Backend (App Service)"]
    direction TB
-    APS["API Backend<br>(App Service - Linux)"]
-    AFN["Azure Functions<br>(Processamento Async)"]
-    SB["Service Bus<br>(Desacoplamento)"]
+    APS["API Backend<br>(App Service Linux + Python 3.12)"]
  end
- subgraph G3["3. Dados & Governança (Data Plane)"]
+ subgraph G3["3. Dados & Segredos (Data Plane)"]
    direction TB
-    SQL["SQL Azure<br>(TDE Enabled)"]
-    REDIS["Redis Cache<br>(Sessão Chat)"]
-    BLOB["Blob Storage<br>(Docs Criptografados)"]
+    SQL["Azure SQL Serverless<br>(TDE Enabled)"]
+    BLOB["Blob Storage<br>(Docs Privados)"]
+    SQU["Storage Queue<br>(outbound-dlq)"]
     KV["Azure Key Vault<br>(Gestão de Segredos)"]
  end
- subgraph G4["4. Integrações Corporativas"]
+ subgraph G4["4. Integração WhatsApp"]
    direction TB
-    TW@{ label: "Twilio (Webhook Seguro)" }
-    IDW@{ label: "IdP / Legacy Identity" }
-    ORA@{ label: "Oracle (ERP)" }
-    SAP@{ label: "SAP (Financeiro)" }
+    INF@{ label: "Infobip API<br>(Webhook Basic Auth)" }
  end
  subgraph OPS["Operação & Observabilidade"]
    direction TB
-    ADO["Azure DevOps<br>(CI/CD Seguro)"]
-    AI["App Insights<br>(Audit Logs & Tracing)"]
+    GHA["GitHub Actions<br>(CI/CD)"]
+    AI["Application Insights<br>(Telemetria + Audit Trail)"]
  end
-    USER -- HTTPS/TLS 1.2 --> AFD
-    AFD -- Private Link --> SWA
-    SWA -- Managed Identity --> APS
-    APS -- Managed Identity --> AFN & SB & SQL & REDIS & KV & TW
-    AFN -- Private Endpoints --> BLOB & IDW
-    SB -- Async/Retry Pattern --> SAP & ORA
-    ADO -.-> SWA
+    USER -- "HTTPS/TLS 1.2 (WhatsApp Business)" --> INF
+    INF -- "POST /bot (Basic Auth)" --> APS
+    APS -- "Managed Identity" --> KV
+    APS -- "pyodbc + retry exp" --> SQL
+    APS -- "azure-storage-blob" --> BLOB
+    APS -- "azure-storage-queue (DLQ)" --> SQU
+    APS -- "send_text/template/image" --> INF
+    GHA -.-> APS
     APS -.-> AI
-    AFN -.-> AI
     SQL -.-> AI
 
-    AFD@{ icon: "azure:front-door-and-cdn-profiles", form: "square"}
-    SWA@{ icon: "azure:static-apps", form: "square"}
     APS@{ icon: "azure:app-services", form: "square"}
-    AFN@{ icon: "azure:function-apps", form: "square"}
-    SB@{ icon: "azure:azure-service-bus", form: "square"}
     SQL@{ icon: "azure:sql-server", form: "square"}
-    REDIS@{ icon: "azure:cache-redis", form: "square"}
     BLOB@{ icon: "azure:storage-accounts", form: "square"}
+    SQU@{ icon: "azure:storage-queues", form: "square"}
     KV@{ icon: "azure:key-vaults", form: "square"}
-    ADO@{ icon: "azure:azure-devops", form: "square"}
+    GHA@{ icon: "azure:github", form: "square"}
     AI@{ icon: "azure:application-insights", form: "square"}
-    
+
     classDef area fill:#f9f9f9,stroke:#666,stroke-width:1px,stroke-dasharray: 0
     classDef external fill:#e3f2fd,stroke:#1565c0,stroke-width:1px,stroke-dasharray: 5 5
 ```
 
-### 2.1 Detalhamento dos Controles de Segurança
+### 2.1 Detalhamento dos Controles de Segurança Implementados
 
 | Camada | Componente | Controle de Segurança Implementado |
 | :--- | :--- | :--- |
-| **Borda** | **Azure Front Door** | Atua como WAF (Web Application Firewall) bloqueando OWASP Top 10, SQL Injection e XSS. Terminação TLS/SSL forçada. |
-| **Computação** | **App Service / Functions** | Uso estrito de **Managed Identities** para eliminar credenciais hardcoded no código. Isolamento via Integração VNET (Subnet Delegation). |
-| **Dados** | **SQL Azure** | Criptografia em repouso (TDE), Firewall lógico (Allow Azure Services only ou Private Endpoint) e Auditoria de Acesso ativada. |
-| **Segredos** | **Key Vault** | Centraliza chaves de API (Twilio), Strings de Conexão legado e Certificados. Nenhuma chave reside no repositório de código (Git). |
-| **Armazenamento**| **Blob Storage** | Armazena documentos (CNH/Selfie). Acesso via SAS Token de curta duração e expiração automática. Criptografia AES-256. |
+| **Borda** | **Webhook `/bot`** | Basic Auth via `verify_infobip_basic_auth` (`secrets.compare_digest`, constant-time). Credenciais (`INFOBIP-WEBHOOK-USER`/`PASSWORD`) no Key Vault. Fail-safe: 503 se ausentes, 401 se inválidas. TLS 1.2+ terminado pelo App Service. |
+| **Borda** | **Webhook `/admin/*`** | Basic Auth separado via `verify_admin_basic_auth` (`ADMIN-USER`/`ADMIN-PASSWORD` no Key Vault). Mesmo padrão fail-safe. Usado para inspeção e retry manual da DLQ. |
+| **Computação** | **App Service Linux** | **Managed Identity** (System-assigned) com role `Key Vault Secrets User` — elimina credenciais hardcoded. Gunicorn + UvicornWorker (4 workers). Python 3.12. |
+| **Dados** | **Azure SQL Serverless** | Criptografia em repouso (**TDE** habilitado por default). Firewall lógico (Allow Azure Services). Auditoria de queries via Audit Logs. Connection string montada em runtime a partir de 4 secrets do Key Vault. |
+| **Dados** | **Storage Queue `outbound-dlq`** | Fila de Dead-Letter para envios outbound que falharam após retry transient. TTL 7 dias, visibility timeout 5 min no retry admin. Política de 1 ciclo (enqueue → retry manual → delete obrigatório). |
+| **Segredos** | **Azure Key Vault** | Centraliza chaves de API (Infobip), credenciais do SQL, connection strings, e credenciais de webhook/admin. **Nenhuma chave reside no Git**. Cache local com singleton — sem TTL (rotacionar exige restart do App Service). RBAC: role `Secrets User` (só leitura) para a Managed Identity. |
+| **Armazenamento**| **Blob Storage** | Armazena documentos enviados pelo parceiro (CNH, Selfie, RG). Containers privados (`documentos-parceiros`, `midia-temporaria`) — acesso só via aplicação. Criptografia AES-256 default do Azure Storage. |
+| **Observabilidade** | **App Insights** | Telemetria estruturada com mascaramento de PII (`mask_pii` — SHA-256 truncado + salt rotacionável `LOG_PII_SALT`). Custom dimensions canônicas (`OPERATION`, `SENDER_HASH`, `STEP`, etc). Correlation ID middleware (operation_id por request). Ver Seção 5.1. |
+| **CI/CD** | **GitHub Actions** | Workflow `main_app-aegea-dev-brazil.yml` faz deploy automático em push para `main`. Publish profile como secret do GitHub (não no Git). |
 
 ---
 
 ## 3. Modelo de Dados e Privacidade (LGPD)
 
-O diagrama abaixo ilustra a estrutura de dados relacional. Atenção especial foi dada à segregação de dados sensíveis (PII) e logs de interação, bem como a nova estrutura de `PEDIDOS_DISPAROS` para rastreio de ofertas ativas.
+O diagrama abaixo ilustra a estrutura de dados relacional implementada no Azure SQL. Segregação intencional entre dados sensíveis (PII) e logs de interação; rastreamento de ofertas ativas via `PEDIDOS_DISPAROS`.
 
 ```mermaid
 erDiagram
@@ -107,30 +102,30 @@ erDiagram
     %% TABELAS PRINCIPAIS (Resumo)
     %% ========================================================
     CHAT_SESSIONS {
-        VARCHAR WhatsAppID PK "Anonimizado em Logs"  
-        VARCHAR CurrentStep  "Estado da Máquina"  
-        NVARCHAR TempData  "TTL Curto (Redis/Mem)"  
-        DATETIME LastUpdate  "Timeout Control"  
+        VARCHAR WhatsAppID PK "Anonimizado em Logs"
+        VARCHAR CurrentStep  "Estado da Máquina"
+        NVARCHAR TempData  "JSON (dados em andamento)"
+        DATETIME LastUpdate  "Timeout Control"
     }
 
     PARCEIROS_PERFIL {
-        GUID ParceiroUUID PK "Identidade Única"  
-        VARCHAR WhatsAppID  "Dado Sensível"  
-        VARCHAR CNPJ  "Dado Público"  
-        VARCHAR CPF  "PII - Sensível (LGPD)"  
-        VARCHAR NomeCompleto  "PII"  
+        GUID ParceiroUUID PK "Identidade Única"
+        VARCHAR WhatsAppID  "Dado Sensível"
+        VARCHAR CNPJ  "Dado Público"
+        VARCHAR CPF  "PII - Sensível (LGPD)"
+        VARCHAR NomeCompleto  "PII"
         VARCHAR Email "PII"
-        ENUM StatusAtual  "Governance State"  
-        GEOGRAPHY Geo_Base  "Dado Sensível (Rastreio)"  
-        VARCHAR chave_pix  "Dado Financeiro"  
-        BOOL Aceite  "Consentimento LGPD"  
+        ENUM StatusAtual  "Governance State"
+        GEOGRAPHY Geo_Base  "Dado Sensível (Rastreio)"
+        VARCHAR chave_pix  "Dado Financeiro"
+        BOOL Aceite  "Consentimento LGPD"
     }
 
     PARCEIROS_DOCS_LEGAIS {
-        INT DocID PK "IDENTITY"  
-        GUID ParceiroUUID FK ""  
-        ENUM TipoDocumento  "CNH, SELFIE (Biometria)"  
-        VARCHAR BlobPath  "Private Container"  
+        INT DocID PK "IDENTITY"
+        GUID ParceiroUUID FK ""
+        ENUM TipoDocumento  "CNH, SELFIE, RG (Biometria)"
+        VARCHAR BlobPath  "Private Container"
         ENUM StatusValidacao "Audit Trail"
     }
 
@@ -152,17 +147,17 @@ erDiagram
     }
 
     ORDENS_SERVICO {
-        GUID OrdemID PK "" 
+        GUID OrdemID PK ""
         GUID PedidoID FK ""
-        GUID ParceiroAlocadoUUID FK "" 
-        ENUM StatusOrdem  "ABERTA, EM_EXECUCAO, CONCLUIDA" 
+        GUID ParceiroAlocadoUUID FK ""
+        ENUM StatusOrdem  "ABERTA, EM_EXECUCAO, CONCLUIDA"
     }
 
     INTERACOES_CHAT {
-        BIGINT ChatID PK "IDENTITY"  
-        GUID ParceiroUUID FK ""  
-        NVARCHAR CorpoMensagem  "Audit Trail"  
-        DATETIME DataHora  ""  
+        BIGINT ChatID PK "IDENTITY"
+        GUID ParceiroUUID FK ""
+        NVARCHAR CorpoMensagem  "Audit Trail"
+        DATETIME DataHora  ""
     }
 
     %% ========================================================
@@ -172,39 +167,46 @@ erDiagram
     PARCEIROS_PERFIL ||--o{ INTERACOES_CHAT : "Gera Logs"
     PARCEIROS_PERFIL ||--o{ ORDENS_SERVICO : "Executa"
     PARCEIROS_PERFIL ||--o{ PEDIDOS_DISPAROS : "Recebe Oferta"
-    
+
     PEDIDOS_SERVICO ||--o{ ORDENS_SERVICO : "Origina"
     PEDIDOS_SERVICO ||--o{ PEDIDOS_DISPAROS : "Gera Oferta"
-    
+
     ORDENS_SERVICO ||--o{ INTERACOES_CHAT : "Contexto"
 ```
 
 ### 3.1 Inventário de Dados Sensíveis e Proteção
 
-A tabela abaixo mapeia os dados críticos identificados no ER Diagram e sua estratégia de proteção:
+A tabela abaixo mapeia os dados críticos identificados no ER Diagram e sua estratégia de proteção **atual** (controles em roadmap marcados como tal):
 
-| Entidade | Dado | Classificação | Estratégia de Proteção |
+| Entidade | Dado | Classificação | Estratégia de Proteção (As-Built) |
 | :--- | :--- | :--- | :--- |
-| **Parceiros** | CPF / Email / Tel | **PII (LGPD)** | Acesso restrito via RBAC na aplicação. Mascaramento em logs de aplicação. |
-| **Parceiros** | Selfie / CNH | **Biometria** | Armazenamento em Blob "Hot" Privado no Azure Storage. Acesso apenas via aplicação (Backend Proxy com SAS Token). |
-| **Parceiros** | Chave Pix | **Financeiro** | Criptografia a nível de coluna (Always Encrypted) ou restrição severa de visualização via API. |
-| **Chat** | Mensagens | **Comunicação** | Retenção definida (ex: 5 anos para fins legais), após isso, expurgo automático (Data Retention Policy). |
+| **Parceiros** | CPF / Email / Telefone | **PII (LGPD)** | Acesso restrito pelo backend (autenticação na futura camada de API). Mascaramento em logs via `mask_pii` — SHA-256 truncado + salt rotacionável. |
+| **Parceiros** | Selfie / CNH / RG | **Biometria** | Blob privado no Azure Storage (containers `documentos-parceiros` e `midia-temporaria`). Acesso somente via aplicação. Criptografia AES-256 default. ⚠ Acesso por SAS Token de curta duração está no Roadmap (atualmente acesso direto via Managed Identity). |
+| **Parceiros** | Chave Pix | **Financeiro** | Armazenado em coluna VARCHAR plana. ⚠ **Always Encrypted (criptografia a nível de coluna) ainda não implementado** — ver Roadmap (Seção 7). Mitigação atual: TDE (em repouso) + acesso restrito pela aplicação. |
+| **Chat** | Mensagens (`INTERACOES_CHAT.CorpoMensagem`) | **Comunicação** | Persistido no SQL com TDE. Política de retenção formal pendente — definir antes do go-live em produção. |
+| **Sessão** | `CHAT_SESSIONS.TempData` | **Operacional** | Dados em andamento do onboarding (CPF parcial, CEP, etc) — limpos ao final do fluxo via `arquivar_usuario_antigo` em `SessionService`. |
 
 ---
 
 ## 4. Fluxos de Integração e Segurança de Rede
 
 ### 4.1 Integração com WhatsApp (Infobip)
-Para garantir que apenas o Infobip possa invocar nossos Webhooks e evitar ataques de *Replay* ou *Man-in-the-Middle*:
-1.  **Basic Auth no Webhook:** No portal Infobip, o perfil de segurança Basic Auth é vinculado ao evento `INBOUND_MESSAGE` e à URL de roteamento `/bot`. No backend, a dependência FastAPI `verify_infobip_basic_auth` (em `main.py`) lê `INFOBIP-WEBHOOK-USER` e `INFOBIP-WEBHOOK-PASSWORD` do **Azure Key Vault** e valida cada requisição com `secrets.compare_digest` (constant-time, resistente a timing attacks). Fail-safe: retorna 503 se as credenciais não estão configuradas, 401 se inválidas.
-2.  **HTTPS:** Todo tráfego é criptografado em trânsito (TLS 1.2+).
-3.  **Histórico:** A integração anterior (Twilio) usava validação de assinatura via header `X-Twilio-Signature`. Substituída por Basic Auth na migração Twilio→Infobip + implementação no PR `feat/webhook-basic-auth`.
 
-### 4.2 Integração com Legado (SAP/Oracle/IDW)
-A comunicação com os sistemas *on-premise* ou legados não é exposta à internet pública.
-1.  **Isolamento:** Utilização de **VNET Integration** nas Azure Functions e App Service.
-2.  **Conectividade:** Tráfego roteado via VPN Gateway ou ExpressRoute.
-3.  **Credenciais:** Credenciais de banco de dados legados são injetadas em tempo de execução via Key Vault References (o desenvolvedor não vê a senha).
+Para garantir que apenas o Infobip possa invocar o webhook inbound e evitar ataques de *Replay* ou *Man-in-the-Middle*:
+
+1. **Basic Auth no Webhook:** No portal Infobip, o perfil de segurança Basic Auth é vinculado ao evento `INBOUND_MESSAGE` e à URL `/bot`. No backend, a dependência FastAPI `verify_infobip_basic_auth` (em `main.py`) lê `INFOBIP-WEBHOOK-USER` e `INFOBIP-WEBHOOK-PASSWORD` do **Azure Key Vault** e valida cada requisição com `secrets.compare_digest` (constant-time, resistente a timing attacks). Fail-safe: retorna 503 se as credenciais não estão configuradas, 401 se inválidas.
+2. **HTTPS:** Todo tráfego é criptografado em trânsito (TLS 1.2+).
+3. **Outbound autenticado:** As chamadas para a API Infobip (`send_text`, `send_template`, `send_image`) usam header `Authorization: App <INFOBIP-API-KEY>`, lido do Key Vault. Cliente HTTP único (`InfobipClient`) com retry transient (2 tentativas, backoff exponencial) e persistência em DLQ (`outbound-dlq`) em caso de falha pós-retry.
+4. **Histórico:** A integração anterior (Twilio) usava validação de assinatura via header `X-Twilio-Signature`. Substituída por Basic Auth na migração Twilio→Infobip (PR `feat/webhook-basic-auth`).
+
+### 4.2 Recuperação de Falhas Outbound (DLQ)
+
+Envios outbound que falham após retry transient são **persistidos** em `outbound-dlq` (Azure Storage Queue) com payload completo (endpoint, body, sender, destinatário hash). Recuperação manual via endpoints admin autenticados (`ADMIN-USER`/`ADMIN-PASSWORD`):
+
+- `GET /admin/dlq` — lista (peek) até 32 mensagens pendentes; operação read-only.
+- `POST /admin/dlq/retry/{message_id}` — re-executa **uma única tentativa** e **deleta obrigatoriamente** a mensagem da fila (sucesso ou falha do retry). Evita fila poluída com mensagens fantasmas re-tentando sozinhas.
+
+Política intencional: zero retry automático após o `transient_retry` esgotar. Cada mensagem tem 1 ciclo de vida: enqueue → retry manual humano → delete. Mensagens não processadas expiram naturalmente em 7 dias (TTL default do Storage Queue).
 
 ---
 
@@ -212,12 +214,10 @@ A comunicação com os sistemas *on-premise* ou legados não é exposta à inter
 
 Todas as ações críticas são auditadas para fins forenses e de conformidade:
 
-* **Application Insights:** Coleta logs de aplicação (Payloads sensíveis são sanitizados antes do log), métricas de performance e falhas.
+* **Application Insights:** Coleta logs de aplicação (Payloads sensíveis são sanitizados antes do log via `mask_pii`), métricas de performance e falhas. Ver Seção 5.1.
 * **Azure Monitor:** Monitora a saúde e disponibilidade dos recursos PaaS.
 * **Log de Auditoria de Banco:** O SQL Azure mantém logs de auditoria sobre quem acessou quais tabelas (Query Store / Audit Logs).
 * **Trilha de Aceite:** O campo `Aceite` na tabela `PARCEIROS_PERFIL` armazena o timestamp e versão dos termos de uso aceitos pelo usuário (Requisito Jurídico irrevogável).
-
----
 
 ### 5.1 Telemetria Estruturada (Application Insights)
 
@@ -242,4 +242,40 @@ A aplicação envia telemetria estruturada para o **Azure Application Insights**
 
 ## 6. Conclusão para o Comitê
 
-A arquitetura proposta utiliza serviços gerenciados (Serverless/PaaS) para minimizar a sobrecarga operacional de patches de segurança e maximizar a disponibilidade. O uso de **Managed Identities** e **Key Vault** garante o princípio de privilégio mínimo e a proteção de segredos. A estrutura de dados foi desenhada considerando a segregação lógica necessária para atender à LGPD, com controles de acesso, criptografia e auditoria nativos da nuvem Azure.
+A arquitetura atual utiliza serviços PaaS gerenciados (App Service Linux, SQL Serverless, Blob Storage, Storage Queue, Key Vault, Application Insights) para minimizar a sobrecarga operacional de patches de segurança. O uso de **Managed Identity** e **Key Vault** garante o princípio de privilégio mínimo e a proteção de segredos. Logs e auditoria nativos da nuvem Azure cobrem os requisitos forenses da LGPD, com mascaramento de PII determinístico e rotacionável.
+
+Há gaps explícitos em relação à arquitetura-alvo de longo prazo (Front Door, isolamento de VNET, frontend admin, integrações ERP), documentados na Seção 7 abaixo para acompanhamento do comitê.
+
+---
+
+## 7. Roadmap Arquitetural (Componentes Não Implementados)
+
+Esta seção lista os componentes da arquitetura-alvo que **ainda não estão em produção** mas que foram considerados no design inicial. São candidatos a próximos PRs, e devem ser avaliados pelo comitê de segurança conforme prioridade de risco.
+
+| Componente | Categoria | Justificativa para incluir |
+| :--- | :--- | :--- |
+| **Azure Front Door + WAF** | Borda | Proteção WAF (OWASP Top 10), DDoS, rate limiting. Hoje o App Service está exposto diretamente — TLS terminado nele. |
+| **VNET Integration + Private Endpoints** | Rede | Isolar SQL/Blob/Key Vault para acesso apenas via rede privada. Hoje SQL usa firewall lógico "Allow Azure Services" (allowlist aberta). |
+| **Frontend Admin (Static Web Apps)** | UI | Console para operação visualizar DLQ, status de parceiros, ordens. Hoje só há endpoints REST acessados via curl/Postman. |
+| **Azure Functions / Worker async** | Processamento | Mover envios outbound de WhatsApp pra worker desacoplado. Hoje cada request bloqueia thread no App Service via `threading.Thread` (ver `ARCHITECTURE.md` → Pontos de fragilidade). |
+| **Azure Service Bus** | Mensageria | Substituir Storage Queue (DLQ + futuro pipeline outbound) caso volume cresça acima de ~32 msg/min e exija sessions/topics. Hoje Storage Queue é suficiente e mais barata. |
+| **Redis Cache (sessão)** | Cache | Mover `CHAT_SESSIONS.TempData` pra Redis para reduzir leitura/escrita no SQL. Hoje cada turn do bot é 1-3 queries no SQL Serverless. |
+| **Always Encrypted em `chave_pix`** | Cripto | Criptografia a nível de coluna no SQL Server — chave permanece no cliente (mesmo um DBA não vê o valor). Hoje só TDE (proteção em repouso). |
+| **Integrações ERP (SAP, Oracle, IdP)** | Negócio | Mock atualmente nos services (`ParceiroService.validar_cnpj_api`, `buscar_cidade_por_cep` retornam fixos). Bloqueador para go-live em produção. |
+| **Migrations versionadas** | Operacional | Schema do SQL atualmente é criado manualmente. PR `feat/migrations` planejada para versionar evolução do schema. |
+| **Slot staging + swap** | Deploy | Deploy atual é direto na produção em push pra `main`. Slot permitiria rollback por swap em vez de revert+redeploy. |
+
+Priorização sugerida (não vinculante): **Front Door (WAF) > Private Endpoints (SQL) > Always Encrypted (chave_pix) > Service Bus > Frontend Admin**.
+
+---
+
+## Atualização deste documento
+
+Sempre que adicionar:
+
+- **Novo componente Azure provisionado** → atualizar Seções 2, 2.1 e remover da Seção 7 (Roadmap).
+- **Novo dado sensível** → atualizar Seção 3.1 (Inventário).
+- **Novo fluxo de integração** → adicionar subseção em 4.
+- **Novo controle de segurança** → atualizar Seção 2.1 e mencionar em 6 (Conclusão) se for material para o comitê.
+
+Use a skill `repo-documentation` (modo update) para detectar drift entre o código e este documento quando houver mudanças significativas.
