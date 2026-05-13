@@ -172,6 +172,17 @@ A Infobip envia `Authorization: Basic <base64(user:password)>` em cada request a
 
 Justificativa: erro humano de configuração (esquecer de provisionar o secret após o deploy) **não pode** abrir o webhook pro mundo. Forçar 503 obriga o sysadmin a configurar antes do go-live.
 
+### Health checks: liveness vs readiness separados
+
+Dois endpoints distintos pra deixar claro o que cada um significa:
+
+- `GET /` (liveness): responde 200 enquanto o processo está vivo. **Não checa dependências.** Usado pelo container/App Service para "o app está rodando?".
+- `GET /health/ready` (readiness): checa SQL (`SELECT 1`), Infobip (client inicializado + sender configurado), Storage Queue (`get_queue_properties` na fila DLQ), e Key Vault (lê secret sentinel). Retorna 200 se tudo OK ou **503** se qualquer dependência falhar. Body inclui detalhe de cada check em ambos os casos — permite dashboard mostrar exatamente o que está com problema.
+
+Configurar o `healthCheckPath` do App Service para `/health/ready` (não `/`) — assim, se SQL ou Storage caem, App Service para de rotear tráfego automaticamente. Detalhes em `docs/DEPLOYMENT.md` seção 5.1.
+
+Sem auth: readiness probe do App Service não envia credenciais. Endpoint público é intencional.
+
 ### Telemetria com correlation_id middleware e PII masking
 
 Toda request ganha um `operation_id` (gerado por `correlation_id_middleware` em `app/core/telemetry.py`) que é injetado em todas as `custom_dimensions` dos logs subsequentes via `logging.Filter`. Permite query Kusto tipo "todos os logs desta mensagem" no App Insights.

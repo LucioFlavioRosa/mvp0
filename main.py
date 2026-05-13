@@ -5,7 +5,7 @@ configure_telemetry()
 
 import secrets
 import time
-from fastapi import Depends, FastAPI, BackgroundTasks, HTTPException, status
+from fastapi import Depends, FastAPI, BackgroundTasks, HTTPException, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel
@@ -21,6 +21,7 @@ from app.schemas.infobip_webhook import InfobipInboundPayload
 from app.core.config import Settings
 from app.core.telemetry import get_logger, mask_pii, correlation_id_middleware
 from app.core import log_dimensions as ld
+from app.core import health
 
 logger = get_logger(__name__)
 
@@ -297,7 +298,55 @@ def _executar_retry_dlq(content: dict) -> dict:
 # ==============================================================================
 @app.get("/")
 def health_check():
+    """Liveness probe: responde 200 enquanto o processo esta vivo.
+
+    NAO checa dependencias - se DB ou Storage caem, o processo continua
+    rodando e atendendo /, mas /health/ready deve falhar.
+    """
     return {"status": "online", "environment": "Azure Production"}
+
+
+@app.get("/health/ready")
+def health_ready(response: Response):
+    """Readiness probe: checa todas as dependencias criticas.
+
+    - SQL via SELECT 1
+    - InfobipClient inicializado + sender configurado
+    - Storage Queue acessivel (DLQ)
+    - Key Vault acessivel (le secret sentinel)
+
+    Retorna 200 se TODOS os checks OK; 503 se qualquer um falhar.
+    Body inclui detalhes de cada check em ambos os casos - permite
+    dashboard mostrar qual dependencia esta com problema.
+
+    Sem auth: readiness probe do App Service nao envia credentials.
+    """
+    checks = {
+        "sql": health.check_database(bot.db) if bot else health._down("sql", "BotEngine nao inicializado", 0),
+        "infobip": health.check_infobip(client, sender_number),
+        "storage": health.check_storage(_dlq),
+        "keyvault": health.check_keyvault(settings),
+    }
+
+    all_ok = all(c["status"] == "ok" for c in checks.values())
+    overall_status = "ok" if all_ok else "degraded"
+    total_duration = sum(c["duration_ms"] for c in checks.values())
+
+    if not all_ok:
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        failed = [name for name, c in checks.items() if c["status"] != "ok"]
+        logger.warning("health/ready degradado", extra={"custom_dimensions": {
+            ld.OPERATION: "health_ready",
+            ld.RESULT: "degraded",
+            "failed_checks": failed,
+            ld.DURATION_MS: total_duration,
+        }})
+
+    return {
+        "status": overall_status,
+        "checks": checks,
+        "duration_ms": total_duration,
+    }
 
 
 @app.post("/bot", dependencies=[Depends(verify_infobip_basic_auth)])
@@ -411,6 +460,8 @@ def admin_dlq_list(limit: int = 32):
         "count": len(messages),
     }})
     return {"count": len(messages), "messages": messages}
+
+
 
 
 @app.post("/admin/dlq/retry/{message_id}", dependencies=[Depends(verify_admin_basic_auth)])
