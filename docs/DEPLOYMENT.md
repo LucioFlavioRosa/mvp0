@@ -513,6 +513,214 @@ az webapp identity show -n $APP_NAME -g rg-aguasdopara-$ENV
 az role assignment list --assignee $PRINCIPAL_ID --scope $KV_ID
 ```
 
+## 12.1 Recovery em massa de mensagens na DLQ
+
+Cenario tipico: Infobip teve uma outage de 30 min, ~50 mensagens cairam na
+`outbound-dlq`. Apos Infobip normalizar, voce quer re-tentar todas de uma vez.
+
+### Pre-requisitos
+
+- `curl` e `jq` instalados (geralmente ja vem no Linux/macOS; no Windows pode
+  instalar via `winget install jqlang.jq`)
+- Credenciais `ADMIN-USER` / `ADMIN-PASSWORD` no Key Vault
+- Bot em estado healthy (validar com `curl $APP_URL/health/ready`)
+
+### Script de listagem (dry-run, nao altera nada)
+
+Sempre rodar isso PRIMEIRO para ver o que ha na DLQ:
+
+```bash
+#!/bin/bash
+# scripts/dlq-list.sh
+# Lista mensagens da DLQ com resumo legivel.
+
+APP_URL="https://app-aegea-prod-brazil.azurewebsites.net"
+ADMIN_USER="aegea-devops"
+
+# Le senha sem deixar no historico
+read -s -p "ADMIN-PASSWORD: " ADMIN_PWD
+echo ""
+
+curl -fsS "$APP_URL/admin/dlq?limit=32" -u "$ADMIN_USER:$ADMIN_PWD" |
+  jq -r '
+    "Total: \(.count) mensagens\n",
+    (.messages[] | "[\(.id)] op=\(.content.operation) attempts=\(.content.attempts) err=\(.content.last_error // "?") at=\(.content.errored_at // "?")")
+  '
+
+unset ADMIN_PWD
+```
+
+Saida exemplo:
+
+```
+Total: 3 mensagens
+
+[abc-123] op=send_template attempts=2 err=HTTPError: 500 at=2026-05-13T14:23:45Z
+[def-456] op=download_media attempts=2 err=Timeout: 10s at=2026-05-13T14:25:11Z
+[ghi-789] op=send_text attempts=2 err=HTTPError: 503 at=2026-05-13T14:30:02Z
+```
+
+### Script de recovery em massa
+
+Itera as mensagens, faz retry em cada uma, gera relatorio final:
+
+```bash
+#!/bin/bash
+# scripts/dlq-retry-all.sh
+# Retry de todas as mensagens da DLQ em massa.
+#
+# Politica do projeto: cada retry DELETA da fila independente do resultado.
+# Se retry falhar, voce decide o que fazer (abrir ticket, ignorar, etc).
+#
+# Uso:
+#   ./dlq-retry-all.sh              # processa todas
+#   ./dlq-retry-all.sh send_text    # so as de operation=send_text
+#   DRY_RUN=1 ./dlq-retry-all.sh    # so mostra o que faria, nao chama retry
+
+set -euo pipefail
+
+APP_URL="${APP_URL:-https://app-aegea-prod-brazil.azurewebsites.net}"
+ADMIN_USER="${ADMIN_USER:-aegea-devops}"
+FILTER_OP="${1:-}"          # opcional: filtra por operation
+DRY_RUN="${DRY_RUN:-0}"
+
+read -s -p "ADMIN-PASSWORD: " ADMIN_PWD
+echo ""
+
+AUTH="$ADMIN_USER:$ADMIN_PWD"
+
+# 1. Lista mensagens (peek - read-only)
+echo "Listando DLQ..."
+MESSAGES=$(curl -fsS "$APP_URL/admin/dlq?limit=32" -u "$AUTH")
+TOTAL=$(echo "$MESSAGES" | jq -r '.count')
+
+if [ "$TOTAL" = "0" ]; then
+  echo "DLQ esta vazia. Nada a fazer."
+  unset ADMIN_PWD
+  exit 0
+fi
+
+# 2. Filtra IDs (opcional por operation)
+if [ -n "$FILTER_OP" ]; then
+  IDS=$(echo "$MESSAGES" | jq -r ".messages[] | select(.content.operation == \"$FILTER_OP\") | .id")
+  COUNT=$(echo "$IDS" | grep -c . || echo 0)
+  echo "Filtrando por operation=$FILTER_OP: $COUNT/$TOTAL mensagens"
+else
+  IDS=$(echo "$MESSAGES" | jq -r '.messages[].id')
+  COUNT=$TOTAL
+  echo "Processando todas as $COUNT mensagens"
+fi
+
+if [ "$COUNT" = "0" ]; then
+  echo "Nenhuma mensagem bate com o filtro."
+  unset ADMIN_PWD
+  exit 0
+fi
+
+# 3. Confirma antes de prosseguir (a nao ser em dry-run)
+if [ "$DRY_RUN" != "1" ]; then
+  read -p "Confirma retry+delete de $COUNT mensagens? [y/N] " CONFIRM
+  if [ "$CONFIRM" != "y" ]; then
+    echo "Abortado."
+    unset ADMIN_PWD
+    exit 0
+  fi
+fi
+
+# 4. Itera retry
+SUCCESS=0
+FAILED=0
+FAILED_IDS=()
+
+while IFS= read -r MSG_ID; do
+  if [ -z "$MSG_ID" ]; then continue; fi
+
+  if [ "$DRY_RUN" = "1" ]; then
+    echo "[DRY-RUN] retry $MSG_ID"
+    continue
+  fi
+
+  RESULT=$(curl -fsS -X POST "$APP_URL/admin/dlq/retry/$MSG_ID" -u "$AUTH" || echo '{"retry_success":false,"retry_error":"curl failed"}')
+  RETRY_OK=$(echo "$RESULT" | jq -r '.retry_success // false')
+  RETRY_ERR=$(echo "$RESULT" | jq -r '.retry_error // ""')
+
+  if [ "$RETRY_OK" = "true" ]; then
+    echo "  OK   $MSG_ID"
+    SUCCESS=$((SUCCESS+1))
+  else
+    echo "  FAIL $MSG_ID -- $RETRY_ERR"
+    FAILED=$((FAILED+1))
+    FAILED_IDS+=("$MSG_ID")
+  fi
+
+  # Throttle leve - evita martelar Infobip
+  sleep 0.5
+done <<< "$IDS"
+
+# 5. Relatorio final
+echo ""
+echo "===== RESUMO ====="
+echo "Total processado: $((SUCCESS + FAILED))"
+echo "Sucesso (entregue):  $SUCCESS"
+echo "Falha (deletada):    $FAILED"
+if [ ${#FAILED_IDS[@]} -gt 0 ]; then
+  echo ""
+  echo "Mensagens que falharam no retry (ja foram DELETADAS da fila):"
+  printf '  %s\n' "${FAILED_IDS[@]}"
+  echo ""
+  echo "Acao sugerida: abrir ticket para investigar essas, ou contatar parceiros por outro canal."
+  echo "Detalhes do payload original ja se perderam (politica delete obrigatorio)."
+fi
+
+unset ADMIN_PWD
+```
+
+### Como executar
+
+```bash
+chmod +x scripts/dlq-retry-all.sh
+
+# 1. Sempre rodar dry-run primeiro
+DRY_RUN=1 ./scripts/dlq-retry-all.sh
+
+# 2. Se OK, rodar de verdade
+./scripts/dlq-retry-all.sh
+
+# 3. Ou filtrar por operation especifica
+./scripts/dlq-retry-all.sh send_template
+```
+
+### Notas de cautela
+
+- **Limite de 32 por chamada**: o endpoint `GET /admin/dlq` retorna no maximo 32
+  mensagens (limite do Storage Queue API). Se a DLQ tem > 32, rodar o script
+  **multiplas vezes** ate `count=0`. Cada execucao processa as 32 mais antigas.
+- **Throttle (`sleep 0.5`)**: evita estourar rate limit do Infobip em recovery
+  grande. Ajuste para mais (1-2s) se Infobip esta sensivel.
+- **Delete obrigatorio**: a politica do projeto (documentada em `ARCHITECTURE.md`)
+  e DELETAR a mensagem da fila apos retry, **mesmo se o retry falhou**. Isso
+  evita fila poluida com mensagens fantasmas. Se algumas falharam no retry, o
+  script lista os IDs no final - copie-os e abra ticket separado.
+- **Idempotencia das operacoes**: `send_text`/`send_template` re-enviados causam
+  o parceiro receber a mensagem N+1 vezes. Para `download_media`, o blob ja
+  pode estar la (idempotente no nome). Cuidado em recovery se voce ja tentou
+  manualmente.
+- **Auditoria**: cada chamada do script gera log no App Insights
+  (`operation=admin_dlq_retry`). Voce pode rodar com confianca pra rastrear
+  depois.
+
+### Variante: gerar relatorio para CSV antes de processar
+
+Util para fazer triagem manual antes de retry em massa:
+
+```bash
+curl -fsS "$APP_URL/admin/dlq?limit=32" -u "$AUTH" |
+  jq -r '.messages[] | [.id, .content.operation, .content.last_error // "", .content.errored_at // ""] | @csv' \
+  > dlq-snapshot-$(date +%Y%m%d-%H%M%S).csv
+```
+
+Output CSV pra abrir no Excel/Sheets, decidir quais re-tentar antes de scripts.
+
 ## Checklist de release
 
 - [ ] Branch da feature mergeada em `main`
@@ -528,7 +736,7 @@ az role assignment list --assignee $PRINCIPAL_ID --scope $KV_ID
 
 Para contexto, ver tambem `ARCHITECTURE.md` -> Pontos de fragilidade.
 
-1. **Endpoint `/api/dispatch` sem autenticacao** - publico. Configurar IP allowlist no Front Door ou Basic Auth analogo ao `/bot`.
+1. ~~**Endpoint `/api/dispatch` sem autenticacao**~~ - **Resolvido**. Bearer JWT do Azure AD (`AZURE-AD-TENANT-ID` + `AZURE-AD-API-CLIENT-ID` no Key Vault). Setup completo em [`AUTH-AZURE-AD.md`](AUTH-AZURE-AD.md).
 2. **Migracoes SQL nao versionadas** - schema gerenciado manualmente. Criar pasta `migrations/` e versionar.
 3. **Sem ambiente prod ativo** - workflow GH so cobre dev. Provisionar prod via este runbook quando aprovado.
 4. **Sem slot staging** - rollback so via revert no Git. Configurar slot para swap.
