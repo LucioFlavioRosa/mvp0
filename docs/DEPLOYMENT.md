@@ -311,7 +311,7 @@ Tabelas inferidas do codigo (do `git grep` nos services):
 | Tabela | Usada em |
 |---|---|
 | `CHAT_SESSIONS` | `bot_engine._get_session/_save_session` |
-| `PARCEIROS_PERFIL` | `parceiro_service` (CRUD do parceiro) |
+| `PARCEIROS_PERFIL` | `etapa_pessoal`, `etapa_endereco` (CRUD direto via DatabaseManager) |
 | `PARCEIROS_DOCS_LEGAIS` | (modulo de documentos) |
 | `PARCEIROS_HABILIDADES` | `etapa_habilidades._salvar_background` |
 | `PARCEIROS_DISPONIBILIDADE` | `etapa_disponibilidade._salvar_disponibilidade` |
@@ -481,7 +481,7 @@ Para contexto, ver tambem `ARCHITECTURE.md` -> Pontos de fragilidade.
 2. **Migracoes SQL nao versionadas** - schema gerenciado manualmente. Criar pasta `migrations/` e versionar.
 3. **Sem ambiente prod ativo** - workflow GH so cobre dev. Provisionar prod via este runbook quando aprovado.
 4. **Sem slot staging** - rollback so via revert no Git. Configurar slot para swap.
-5. **Mocks de validacao em producao** - `ParceiroService.validar_cnpj_api` e `buscar_cidade_por_cep` ainda sao mocks. Integrar Serpro/ViaCEP reais antes de go-live em prod.
+5. **Mock de validacao CNPJ em producao** - inline em `etapa_pessoal.processar_cnpj` (regra fake "termina em 0000 e invalido"). Integrar Serpro/Receita Federal real antes de go-live. (ViaCEP e Google Maps ja sao reais em `etapa_endereco.py`.)
 
 ## Atualizacao deste documento
 

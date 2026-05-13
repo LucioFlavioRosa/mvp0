@@ -13,8 +13,9 @@ Cada service encapsula uma capacidade externa ou um agregado de operações de d
 | `whatsapp_service.py` | `WhatsAppService` | Envio outbound de mensagens via Infobip |
 | `dispatch_service.py` | `DispatchService` | Notifica parceiros sobre novo pedido |
 | `azure_blob_service.py` | `AzureBlobService` | Baixa mídia recebida no chat e sobe pro Blob |
-| `parceiro_service.py` | `ParceiroService` | CRUD do perfil do parceiro |
 | `session_service.py` | `SessionService` | Define estado de entrada do usuário (novo/em andamento/completo) |
+
+> **Nota**: persistência do perfil do parceiro (CPF, nome, endereço, geo, etc) é feita **diretamente pelas etapas** (`app/modules/etapa_pessoal.py`, `etapa_endereco.py`) via `DatabaseManager`, sem camada de service intermediária. Houve um `ParceiroService` mas estava desconectado (dead code) — removido no PR `chore/remove-parceiro-service`.
 
 ## API pública por service
 
@@ -83,35 +84,6 @@ class AzureBlobService:
 - **Retry transient no download**: `_download_midia` é decorado com `@transient_retry` — 2 tentativas em timeout/connection/5xx. 4xx (URL inválida, auth) loga WARNING e retorna `None` (não tenta de novo). Erro persistente retorna `None`.
 - **DLQ pós-falha**: tanto em 4xx (`attempts=1`) quanto em erro persistente pós-retry (`attempts=2`), o `_enqueue_dlq` enfileira a tentativa em `outbound-dlq` (Azure Storage Queue). Operação `download_media`, payload com `media_url`/`container_name`/`blob_name`. Recuperável via `POST /admin/dlq/retry/{id}`.
 
-### `ParceiroService`
-
-```python
-class ParceiroService:
-    def __init__(self) -> None: ...
-    # Dados pessoais
-    def salvar_cnpj_inicial(self, whatsapp_id: str, cnpj: str) -> bool: ...
-    def validar_cnpj_api(self, cnpj: str) -> tuple[bool, str]: ...
-    def salvar_cpf(self, whatsapp_id: str, cpf: str) -> bool: ...
-    def salvar_nome(self, whatsapp_id: str, nome: str) -> bool: ...
-    # Endereço
-    def buscar_cidade_por_cep(self, cep: str) -> tuple[str, str]: ...
-    def salvar_cep_cidade(self, whatsapp_id: str, cep: str, cidade: str) -> bool: ...
-    def salvar_rua(self, whatsapp_id: str, rua: str) -> bool: ...
-    def salvar_bairro(self, whatsapp_id: str, bairro: str) -> bool: ...
-    def finalizar_endereco_com_geo(self, whatsapp_id: str, numero: str) -> bool: ...
-```
-
-**Como é usado:**
-
-- Chamado pelos módulos de etapa (`EtapaPessoal`, `EtapaEndereco`) durante o fluxo de onboarding.
-
-**Pontos não óbvios:**
-
-- **CNPJ é a chave de criação**: `salvar_cnpj_inicial` faz `MERGE` em `PARCEIROS_PERFIL` — cria o registro se não existe, atualiza se já existe. Gera `ParceiroUUID` aqui.
-- **`validar_cnpj_api` é mock** — `time.sleep(1)` + regra fake "termina em `0000` é inválido". ⚠ Substituir por chamada Serpro/Receita Federal antes de prod.
-- **`buscar_cidade_por_cep` também é mock** — retorna `("Belém", "PA")` fixo. ⚠ Substituir por ViaCEP em prod.
-- **Geo**: `finalizar_endereco_com_geo` injeta `geography::Point(lat, long, 4326)` no SQL Server. Lat/long também mockados (random em torno de Belém). Substituir por Google Maps API em prod.
-
 ### `SessionService`
 
 ```python
@@ -137,7 +109,7 @@ class SessionService:
 Itens que afetam mais de um service e valeria endereçar:
 
 - **Retry transient + DLQ implementados** em chamadas HTTP externas (Infobip, Blob download, ViaCEP, Google Maps) via `app/core/retry.py` (2 tentativas, backoff exponencial). Falhas pós-retry são **persistidas na DLQ** (Azure Storage Queue `outbound-dlq`, ver `app/integrations/dlq.py`) e recuperáveis manualmente via endpoints admin `GET /admin/dlq` e `POST /admin/dlq/retry/{message_id}` (autenticados com `ADMIN-USER`/`ADMIN-PASSWORD`). Política: 1 tentativa manual por mensagem, delete obrigatório no fim — evita fila poluída com mensagens fantasmas.
-- **Mocks (Serpro, ViaCEP, Google Maps)** ainda no `ParceiroService`. ⚠ Bloqueador de prod.
+- **Mock de validação de CNPJ** ainda inline em `etapa_pessoal.processar_cnpj` (logger `validacao mock CNPJ`, regra fake "termina em 0000 é inválido"). ⚠ Bloqueador de prod — substituir por integração Serpro/Receita Federal. (ViaCEP e Google Maps já são chamadas reais em `etapa_endereco.py`.)
 - **`time.sleep`** em vários lugares (`WhatsAppService._processar_sequencia`, `main.enviar_sequencia_background`) — segura a thread. Pra escala, considerar Service Bus + worker.
 
 ## O que NÃO está aqui

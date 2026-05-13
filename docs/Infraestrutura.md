@@ -261,7 +261,7 @@ Esta seção lista os componentes da arquitetura-alvo que **ainda não estão em
 | **Azure Service Bus** | Mensageria | Substituir Storage Queue (DLQ + futuro pipeline outbound) caso volume cresça acima de ~32 msg/min e exija sessions/topics. Hoje Storage Queue é suficiente e mais barata. |
 | **Redis Cache (sessão)** | Cache | Mover `CHAT_SESSIONS.TempData` pra Redis para reduzir leitura/escrita no SQL. Hoje cada turn do bot é 1-3 queries no SQL Serverless. |
 | **Always Encrypted em `chave_pix`** | Cripto | Criptografia a nível de coluna no SQL Server — chave permanece no cliente (mesmo um DBA não vê o valor). Hoje só TDE (proteção em repouso). |
-| **Integrações ERP (SAP, Oracle, IdP)** | Negócio | Mock atualmente nos services (`ParceiroService.validar_cnpj_api`, `buscar_cidade_por_cep` retornam fixos). Bloqueador para go-live em produção. |
+| **Integrações ERP (SAP, Oracle, IdP)** | Negócio | Mock de CNPJ ainda inline em `etapa_pessoal.processar_cnpj`. Bloqueador para go-live em produção (substituir por Serpro/Receita Federal). ViaCEP e Google Maps já são chamadas reais. |
 | **Migrations versionadas** | Operacional | Schema do SQL atualmente é criado manualmente. PR `feat/migrations` planejada para versionar evolução do schema. |
 | **Slot staging + swap** | Deploy | Deploy atual é direto na produção em push pra `main`. Slot permitiria rollback por swap em vez de revert+redeploy. |
 
