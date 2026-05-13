@@ -84,19 +84,23 @@ Variáveis de ambiente são lidas diretamente; segredos vivem no Azure Key Vault
 | Key Vault | `INFOBIP-SENDER` | Número remetente E164 sem prefixo |
 | Key Vault | `INFOBIP-WEBHOOK-USER` | Usuário Basic Auth do webhook `/bot` (deve bater com o portal Infobip) |
 | Key Vault | `INFOBIP-WEBHOOK-PASSWORD` | Senha Basic Auth do webhook `/bot` |
+| Key Vault | `ADMIN-USER` | Usuário Basic Auth dos endpoints `/admin/*` (DLQ list/retry) |
+| Key Vault | `ADMIN-PASSWORD` | Senha Basic Auth dos endpoints `/admin/*` |
 | Key Vault | `DB-SERVER` | Endereço do SQL Server |
 | Key Vault | `DB-NAME` | Nome do banco |
 | Key Vault | `DB-USER` | Usuário SQL |
 | Key Vault | `DB-PASSWORD` | Senha SQL |
-| Key Vault | `CONNECTION-STRING-AZURE-STORAGE` | Connection string do Blob |
+| Key Vault | `CONNECTION-STRING-AZURE-STORAGE` | Connection string da Storage Account (usada por Blob containers **e** Storage Queue `outbound-dlq` para DLQ de envios outbound) |
 
 ## Endpoints
 
 | Método | Rota | Descrição |
 |---|---|---|
 | `GET` | `/` | Health check (responde `{"status": "online"}`) |
-| `POST` | `/bot` | Webhook inbound do Infobip — recebe mensagens do WhatsApp |
+| `POST` | `/bot` | Webhook inbound do Infobip — recebe mensagens do WhatsApp (Basic Auth `INFOBIP-WEBHOOK-USER`/`PASSWORD`) |
 | `POST` | `/api/dispatch` | Backoffice notifica parceiros sobre novo pedido |
+| `GET` | `/admin/dlq` | Lista (peek) mensagens pendentes na DLQ (Basic Auth `ADMIN-USER`/`PASSWORD`) |
+| `POST` | `/admin/dlq/retry/{message_id}` | Re-executa uma mensagem da DLQ e deleta (1 tentativa por mensagem) |
 
 Lista completa em Swagger (`/docs`).
 
