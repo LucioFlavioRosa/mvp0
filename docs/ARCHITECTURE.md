@@ -194,7 +194,7 @@ Itens que valeria endereçar (ordem de impacto):
 
 1. ~~**Templates Twilio não migrados em `app/modules/onboarding.py`**~~ — **Resolvido**. Os SIDs `HX...` foram removidos. (Histórico: era pendência da migração Twilio→Infobip; checada em `git grep 'HX[a-f0-9]{32}'` → vazio.)
 
-2. **Payload de template inconsistente** — `onboarding.py` e `app/modules/common.py:29-34` (`GeradorResposta.template`) ainda usam `template_sid` + `variaveis` (dict). Após migração Infobip, deveriam ser `template_name` + `placeholders` (lista). Funcionará via fallback `_dict_to_positional_list` em `WhatsAppService`, mas é frágil — se a ordem das chaves do dict não for `'1', '2', ...` previsível, o resultado é errado.
+2. **Payload de template inconsistente** — `onboarding.py` ainda monta dicts inline com `template_sid` + `variaveis` (formato Twilio antigo). Após migração Infobip, deveria ser `template_name` + `placeholders` (lista). Funcionará via fallback `_dict_to_positional_list` em `WhatsAppService`, mas é frágil — se a ordem das chaves do dict não for `'1', '2', ...` previsível, o resultado é errado. (Histórico: também havia `GeradorResposta.template` em `app/modules/common.py` com o mesmo problema; removida em `chore/remove-parceiro-service` por ser dead code.)
 
 3. ~~**Sem dead-letter queue em envios outbound**~~ — **Resolvido**. Retry transient (`app/core/retry.py`: 2 tentativas, backoff exponencial, só em timeout/connection error/5xx) + persistência das falhas pós-retry na Azure Storage Queue `outbound-dlq` (`app/integrations/dlq.py`). Recuperação manual via endpoints admin `GET /admin/dlq` (lista) e `POST /admin/dlq/retry/{message_id}` (re-executa + delete obrigatório). Política: 1 tentativa manual por mensagem; sem retry automático — evita fila poluída.
 
