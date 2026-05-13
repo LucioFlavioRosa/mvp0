@@ -1,6 +1,12 @@
 from datetime import datetime
+
 from app.core.database import DatabaseManager
+from app.core.telemetry import get_logger, mask_pii
+from app.core import log_dimensions as ld
 from app.services.whatsapp_service import WhatsAppService
+
+logger = get_logger(__name__)
+
 
 class DispatchService:
     def __init__(self):
@@ -78,11 +84,36 @@ class DispatchService:
                         urgencia,
                     ]
 
-                    # C) ENVIA WHATSAPP
+                    # C) ENVIA TEMPLATE VIA WHATSAPP
+                    # enviar_resposta dispara threading.Thread internamente, retorna None.
+                    # count_envios reflete envios DISPARADOS (entrega assincrona),
+                    # nao confirmacao de entrega na ponta do parceiro.
                     msg_template = {
                         'tipo': 'template',
                         'template_name': self.TEMPLATE_OFERTA,
                         'placeholders': placeholders,
                     }
+                    self.whatsapp.enviar_resposta(whatsapp_id, msg_template)
+                    count_envios += 1
+                else:
+                    logger.warning("dispatch: falha ao registrar disparo no banco",
+                                   extra={"custom_dimensions": {
+                                       ld.OPERATION: "dispatch",
+                                       ld.PEDIDO_ID: pedido_uuid,
+                                       ld.PARCEIRO_HASH: mask_pii(parceiro_uuid),
+                                   }})
+            else:
+                logger.warning("dispatch: parceiro nao encontrado",
+                               extra={"custom_dimensions": {
+                                   ld.OPERATION: "dispatch",
+                                   ld.PEDIDO_ID: pedido_uuid,
+                                   ld.PARCEIRO_HASH: mask_pii(parceiro_uuid),
+                               }})
 
-  
+        logger.info("dispatch concluido", extra={"custom_dimensions": {
+            ld.OPERATION: "dispatch",
+            ld.PEDIDO_ID: pedido_uuid,
+            "parceiros_count": len(lista_uuids),
+            "enviados": count_envios,
+        }})
+        return {"status": "success", "enviados": count_envios}
