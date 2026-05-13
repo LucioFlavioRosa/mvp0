@@ -38,6 +38,30 @@ def env_vars(monkeypatch):
     yield
 
 
+@pytest.fixture(autouse=True)
+def disable_rate_limiter():
+    """Desabilita o rate limiter em TODOS os testes por default.
+
+    Razao: TestClient roda tudo como 127.0.0.1 e nao zera contadores entre
+    testes da mesma suite. Sem isso, testes que fazem >N requests batem em
+    429 e falham (mesmo testes que nao tem nada a ver com rate limit).
+
+    Para testar comportamento de rate limit, ver tests/unit/test_rate_limit.py
+    que tem fixture local para reabilitar. Essa fixture LOCAL eh responsavel
+    por restaurar enabled=False no cleanup (esta autouse so seta False antes).
+    """
+    try:
+        from app.core.rate_limit import limiter
+        limiter.enabled = False
+    except Exception:
+        pass
+    yield
+    # NAO restauramos enabled aqui - fixture enable_rate_limiter local
+    # faz isso no cleanup dela. Restaurar aqui causava bug onde "previous"
+    # capturava True de teste anterior nao limpo, e o autouse seguinte
+    # mantinha True por engano.
+
+
 # ---------------------------------------------------------------------------
 # Settings (mock do Key Vault)
 # ---------------------------------------------------------------------------
@@ -154,9 +178,6 @@ def mock_dlq(mocker):
     return dlq
 
 
-# ---------------------------------------------------------------------------
-# FastAPI TestClient
-# ---------------------------------------------------------------------------
 @pytest.fixture
 def client(mock_settings, mock_db, mock_infobip, mock_dlq):
     """TestClient com main.app + mocks aplicados.

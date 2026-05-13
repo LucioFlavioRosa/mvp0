@@ -4,11 +4,11 @@
 
 ## Visão geral
 
-A suite hoje tem **97 testes unitários** distribuídos em 12 arquivos. Cobertura global em **~48%**, com cobertura cirúrgica nos caminhos críticos: autenticação (Basic Auth + Azure AD JWT), CORS, retry transient, DLQ, dispatch, health checks.
+A suite hoje tem **101 testes unitários** distribuídos em 13 arquivos. Cobertura global em **~49%**, com cobertura cirúrgica nos caminhos críticos: autenticação (Basic Auth + Azure AD JWT), CORS, rate limit, retry transient, DLQ, dispatch, health checks.
 
 | Métrica | Valor |
 |---|---|
-| Total de testes | 97 |
+| Total de testes | 101 (97 default + 4 marcados como `slow`) |
 | Tempo de execução (suite completa) | ~1s |
 | Não-flaky em 3+ rodadas consecutivas | OK |
 | Sem dependência externa (rede, disco, DB real) | OK |
@@ -44,8 +44,11 @@ Dependências (em `requirements-dev.txt`):
 ### Comandos comuns
 
 ```bash
-# Roda toda a suite
+# Roda toda a suite (exceto testes 'slow' como rate_limit)
 pytest tests/
+
+# Roda também os testes marcados como 'slow' (rate limit etc)
+pytest tests/ -m slow
 
 # Só um arquivo
 pytest tests/unit/test_admin_auth.py -v
@@ -136,6 +139,14 @@ Cobre: `enqueue` happy + 2 cenários fail-safe (queue offline / `send_message` l
 Cobre: sessão nova (`START`), sessão ativa (step + dados), timeout 5 min (`START` + `step_backup`), passos terminais (sem `step_backup`), `_save_session` skipa `START`/`NO_UPDATE` e grava demais, oferta pendente intercepta fluxo de cadastro, saudação no meio do fluxo grava `step_backup`.
 
 > **Detalhe técnico**: usa `BotEngine.__new__` + injeção de atributos. Razão: `__init__` é pesado (instancia 7 módulos de etapa, alguns com Google Maps client no construtor).
+
+### `tests/unit/test_rate_limit.py` (4 testes, marcados `slow`)
+
+Rate limit via `slowapi`. Marcados como `slow` porque dependem de estado global do limiter que não isola perfeitamente entre testes — rodar separado com `pytest -m slow`.
+
+Cobre: `/admin/dlq` bloqueia após 20 requests/min; `/api/dispatch` bloqueia após 10/min; `GET /` e `GET /health/ready` não têm rate limit (probes Azure precisam frequência alta).
+
+> **Detalhe técnico**: fixture local `fresh_rate_limited_client` recria `TestClient` zerado + habilita o limiter (autouse `disable_rate_limiter` no conftest mantém desligado por default).
 
 ### `tests/unit/test_cors.py` (4 testes)
 

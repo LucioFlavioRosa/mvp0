@@ -24,6 +24,9 @@ from app.core.telemetry import get_logger, mask_pii, correlation_id_middleware
 from app.core import log_dimensions as ld
 from app.core import health
 from app.core.azure_auth import get_azure_scheme, get_init_error
+from app.core.rate_limit import limiter
+from slowapi.errors import RateLimitExceeded
+from slowapi import _rate_limit_exceeded_handler
 
 logger = get_logger(__name__)
 
@@ -32,6 +35,11 @@ logger = get_logger(__name__)
 # ==============================================================================
 
 app = FastAPI(title="Bot Aguas do Para", version="1.0.0")
+
+# Rate limit (slowapi com Redis - ver app/core/rate_limit.py)
+# Decorators @limiter.limit("X/min") aplicados nos endpoints abaixo.
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # CORS apertado: le lista de origens permitidas da env var ALLOWED_ORIGINS
 # (comma-separated). Sem env var configurada, lista vazia (= bloqueia todas
@@ -380,7 +388,8 @@ def health_ready(response: Response):
 
 
 @app.post("/bot", dependencies=[Depends(verify_infobip_basic_auth)])
-async def chat_webhook(payload: InfobipInboundPayload, background_tasks: BackgroundTasks):
+@limiter.limit("30/minute")
+async def chat_webhook(request: Request, payload: InfobipInboundPayload, background_tasks: BackgroundTasks):
     """Webhook principal que recebe mensagens do WhatsApp via Infobip.
 
     Autenticado via Basic Auth (configurado no portal Infobip + Key Vault).
@@ -479,7 +488,8 @@ async def chat_webhook(payload: InfobipInboundPayload, background_tasks: Backgro
 
 
 @app.get("/admin/dlq", dependencies=[Depends(verify_admin_basic_auth)])
-def admin_dlq_list(limit: int = 32):
+@limiter.limit("20/minute")
+def admin_dlq_list(request: Request, limit: int = 32):
     """Lista (peek) ate 32 mensagens pendentes na DLQ. NAO remove nem altera
     visibilidade - operacao read-only segura pra inspecao.
     """
@@ -495,7 +505,8 @@ def admin_dlq_list(limit: int = 32):
 
 
 @app.post("/admin/dlq/retry/{message_id}", dependencies=[Depends(verify_admin_basic_auth)])
-def admin_dlq_retry(message_id: str):
+@limiter.limit("20/minute")
+def admin_dlq_retry(request: Request, message_id: str):
     """Re-executa UMA mensagem da DLQ por ID e deleta no final.
 
     Politica (alinhada com pedido do user):
@@ -569,7 +580,8 @@ async def verify_dispatch_auth(request: Request):
 
 
 @app.post("/api/dispatch")
-async def dispatch_order(data: DispatchRequest, user=Depends(verify_dispatch_auth)):
+@limiter.limit("10/minute")
+async def dispatch_order(request: Request, data: DispatchRequest, user=Depends(verify_dispatch_auth)):
     """Disparo de oferta a parceiros via WhatsApp.
 
     Auth: Bearer JWT do Azure AD (tenant Aegea). Operador autentica via SSO

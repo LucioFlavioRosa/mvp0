@@ -40,6 +40,7 @@ flowchart TB
     SQL["Azure SQL Serverless<br>(TDE Enabled)"]
     BLOB["Blob Storage<br>(Docs Privados)"]
     SQU["Storage Queue<br>(outbound-dlq)"]
+    RED["Azure Cache for Redis<br>(Rate Limit)"]
     KV["Azure Key Vault<br>(Gestão de Segredos)"]
  end
  subgraph G4["4. Integração WhatsApp"]
@@ -57,6 +58,7 @@ flowchart TB
     APS -- "pyodbc + retry exp" --> SQL
     APS -- "azure-storage-blob" --> BLOB
     APS -- "azure-storage-queue (DLQ)" --> SQU
+    APS -- "redis (rate limit)" --> RED
     APS -- "send_text/template/image" --> INF
     GHA -.-> APS
     APS -.-> AI
