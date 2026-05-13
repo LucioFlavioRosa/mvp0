@@ -164,7 +164,43 @@ az storage queue create \
 - Visibility timeout no retry admin: 5 min (`RECEIVE_VISIBILITY_SECONDS = 300`)
 - Politica: 1 ciclo de vida por mensagem (enqueue -> admin retry manual -> delete obrigatorio)
 
-### 2.7 App Service
+### 2.7 Azure Cache for Redis (rate limit)
+
+```bash
+REDIS_NAME=mvp0-rate-limit-$ENV
+
+az redis create \
+  --name $REDIS_NAME \
+  --resource-group rg-aguasdopara-$ENV \
+  --location $LOCATION \
+  --sku Basic \
+  --vm-size c0
+```
+
+> Tier `Basic C0` eh o mais barato (~R$ 80/mes). Suficiente pra rate limit
+> de aplicacao MVP (storage <100MB, baixa concorrencia). Pra producao com
+> trafego alto, considerar Standard C1+ (HA com replica).
+
+Pegar a connection string para o secret do passo 4:
+
+```bash
+REDIS_HOST=$(az redis show \
+  --name $REDIS_NAME \
+  --resource-group rg-aguasdopara-$ENV \
+  --query hostName -o tsv)
+
+REDIS_KEY=$(az redis list-keys \
+  --name $REDIS_NAME \
+  --resource-group rg-aguasdopara-$ENV \
+  --query primaryKey -o tsv)
+
+REDIS_CONN_STRING="${REDIS_HOST}:6380,password=${REDIS_KEY},ssl=True,abortConnect=False"
+echo "$REDIS_CONN_STRING"  # copiar pro Key Vault no passo 4
+
+unset REDIS_KEY REDIS_CONN_STRING
+```
+
+### 2.8 App Service
 
 ```bash
 APP_NAME=app-aegea-$ENV-brazil   # dev = "app-aegea-dev-brazil" (igual ao workflow GH atual)
@@ -226,6 +262,7 @@ Use `Secrets User` (so leitura), nao `Secrets Officer` - a app nao cria/altera s
 | `ADMIN-PASSWORD` | Senha Basic Auth dos endpoints `/admin/*` | DevOps |
 | `AZURE-AD-TENANT-ID` | Portal Azure -> Entra ID -> Overview -> Tenant ID. Usado para validar JWT do `/api/dispatch`. Setup completo em [`AUTH-AZURE-AD.md`](AUTH-AZURE-AD.md). | DevOps |
 | `AZURE-AD-API-CLIENT-ID` | Client ID da App Registration "Bot Aguas API" (passo 1 do AUTH-AZURE-AD.md). Identifica esta API no Azure AD. | DevOps |
+| `REDIS-CONNECTION-STRING` | Connection string do Azure Cache for Redis (Basic C0 minimo). Usado para rate limit compartilhado entre workers/instancias. Formato: `<host>:6380,password=<key>,ssl=True,abortConnect=False`. Sem isso, rate limit cai em modo in-memory por worker (limite efetivo × N_workers × N_instancias). | DevOps |
 | `DB-SERVER` | `<sql-server>.database.windows.net` (do passo 2.4) | DevOps |
 | `DB-NAME` | `aguasdopara` (do passo 2.4) | DevOps |
 | `DB-USER` | `sqladmin` (do passo 2.4) | DevOps |
@@ -464,6 +501,15 @@ curl -i -X OPTIONS $APP_URL/api/dispatch \
   -H "Access-Control-Request-Method: POST"
 # Esperado: SEM header 'Access-Control-Allow-Origin'
 # Se retornar: ALLOWED_ORIGINS esta com '*' ou wildcard inseguro
+
+# 11. Rate limit - admin_dlq bloqueia apos 20 requests/minuto
+for i in $(seq 1 25); do
+  curl -s -o /dev/null -w "%{http_code}\n" \
+    $APP_URL/admin/dlq -u "<ADMIN-USER>:<ADMIN-PASSWORD>"
+done
+# Esperado: primeiras ~20 retornam 200, depois 429 (rate limit excedido)
+# Se TODAS retornam 200: REDIS-CONNECTION-STRING ausente ou Redis indisponivel
+#   (modo fallback in-memory por worker - limite efetivo = 20 × N_workers)
 ```
 
 Se algum smoke test falhar, ver passo 12 (troubleshooting).
@@ -506,6 +552,8 @@ Para mudancas de schema SQL, rollback manual com os comentarios `-- Rollback:` q
 | 401 em `/api/dispatch` com token aparentemente valido | Claim do JWT errado (audience, issuer ou scope) | Decodificar token em jwt.ms e conferir: `aud` = `api://<azure-ad-api-client-id>`, `scp` contem `dispatch.write`. Ver `docs/AUTH-AZURE-AD.md` secao Troubleshooting |
 | Browser do backoffice mostra "CORS error" no console | `ALLOWED_ORIGINS` nao inclui a URL exata do backoffice OU env var ausente | Conferir `ALLOWED_ORIGINS` no App Service Settings - protocolo `https://`, sem barra no final, dominio exato. Smoke test #9 com curl + `Origin` header reproduz |
 | `/api/dispatch` aceita requests sem origin (curl/Postman) mesmo com CORS apertado | Comportamento esperado | CORS so se aplica a requests cross-origin de browser (com header `Origin`). Server-to-server sem header `Origin` nao eh bloqueado por CORS - eh bloqueado pela auth Azure AD que ja exigimos |
+| Rate limit nao bloqueia mesmo com muitas requests | `REDIS-CONNECTION-STRING` ausente ou Redis caiu - app caiu em fallback in-memory por worker (limite efetivo × workers × instancias) | Confirmar secret no Key Vault. Ver log "REDIS-CONNECTION-STRING ausente; rate limit em modo in-memory" em App Insights. Provisionar Redis (passo 2.7) |
+| Rate limit bloqueia tudo apos restart | Storage Redis preservou contadores antigos | Aguardar janela de 1 min, contadores expiram automaticamente. Em emergencia: `az redis force-reboot` |
 | 404 em `POST /admin/dlq/retry/{id}` mesmo com mensagem visivel em `GET /admin/dlq` | Mensagem pode estar com visibility timeout ativo (alguem chamou retry recentemente) ou TTL expirou | Aguardar 5 min ou re-listar para pegar o ID atual |
 | Mensagens "fantasma" reaparecendo na DLQ | `delete()` falhou pos-retry (pop_receipt mismatch) | Ver log `falha ao deletar mensagem da DLQ` no App Insights; geralmente significa que outro admin processou em paralelo - re-tentar |
 | `pyodbc.OperationalError` SQL | Cold start do Serverless | Aguardar retry exponencial do `DatabaseManager` (ate ~1min); subsequente requests funcionam |

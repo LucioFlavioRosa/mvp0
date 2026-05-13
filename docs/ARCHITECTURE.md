@@ -192,6 +192,20 @@ A Infobip envia `Authorization: Basic <base64(user:password)>` em cada request a
 
 Justificativa: erro humano de configuração (esquecer de provisionar o secret após o deploy) **não pode** abrir o webhook pro mundo. Forçar 503 obriga o sysadmin a configurar antes do go-live.
 
+### Rate limit com storage Redis compartilhado
+
+`slowapi` aplica limites por IP em endpoints sensíveis: `/bot` 30/min, `/admin/*` 20/min, `/api/dispatch` 10/min. `GET /` e `GET /health/ready` sem limite (probe Azure precisa bater frequentemente).
+
+**Storage: Redis (não in-memory).** Por quê:
+
+- Gunicorn roda 4 workers (cada processo Python tem memória isolada)
+- App Service escala 1 → N instâncias sob carga
+- Sem estado compartilhado, "10/min" vira "10/min × workers × instâncias" = 40-200/min na prática
+
+Azure Cache for Redis Basic C0 centraliza o contador. Limite configurado = limite efetivo, independente de escala. Fallback automático para in-memory se Redis indisponível (degradação parcial, não quebra).
+
+Connection string no Key Vault como `REDIS-CONNECTION-STRING`. Parse de formato Azure (`host:port,password=X,ssl=True`) para URI slowapi (`rediss://:X@host:port/0`) em `app/core/rate_limit.py`.
+
 ### Health checks: liveness vs readiness separados
 
 Dois endpoints distintos pra deixar claro o que cada um significa:
@@ -236,6 +250,8 @@ Itens que valeria endereçar (ordem de impacto):
 6. ~~**CORS aberto**~~ — **Resolvido**. CORS configurado via env var `ALLOWED_ORIGINS` (comma-separated). Sem env var = lista vazia (fail-safe). Methods restritos a `GET`/`POST`/`OPTIONS`, headers restritos a `Authorization`/`Content-Type`. Setup em `DEPLOYMENT.md` passo 5. NÃO usar wildcard `*.azurewebsites.net` (qualquer um cria subdomínio Azure).
 
 7. ~~**Logs via `print` + `traceback.print_exc()`**~~ — **Resolvido** pelo PR `chore/structured-logging`. Hoje: `logger` estruturado por módulo + custom dimensions canônicas + PII masking + correlation_id middleware. Ver seção "Decisões-chave" e [`modules/core.md → Telemetria`](modules/core.md).
+
+8. ~~**Sem rate limit**~~ — **Resolvido**. `slowapi` aplicado nos endpoints: `/bot` 30/min, `/admin/*` 20/min, `/api/dispatch` 10/min. Storage compartilhado via Azure Cache for Redis (`REDIS-CONNECTION-STRING` no Key Vault) — essencial com Gunicorn 4 workers + scaling automático (sem isso, limite efetivo multiplica por N_workers × N_instâncias). Fallback in-memory se Redis cair. Setup em `DEPLOYMENT.md` passo 2.7.
 
 ## Recursos externos
 
