@@ -141,10 +141,24 @@ Configurar no App Service:
 2. **Managed Identity** habilitada — usa `DefaultAzureCredential` pra ler do Key Vault.
 3. **Webhook do Infobip** apontando pra `https://<your-app>.azurewebsites.net/bot`.
 
+## Testes
+
+Suite de **71 testes unitários**, ~1s de execução, cobertura 44%. Roda em todo PR via GitHub Actions.
+
+```bash
+pip install -r requirements-dev.txt
+pytest tests/                                 # roda tudo
+pytest tests/ --cov=app --cov=main            # com cobertura
+```
+
+Detalhes (inventário, padrões de mocking, troubleshooting): [docs/TESTING.md](docs/TESTING.md).
+
 ## Documentação adicional
 
 - [Arquitetura de código](docs/ARCHITECTURE.md) — componentes, fluxos, decisões
 - [Arquitetura de infraestrutura](docs/Infraestrutura.md) — Azure, segurança, LGPD
+- [Deploy](docs/DEPLOYMENT.md) — runbook operacional Azure
+- [Testes](docs/TESTING.md) — suite de testes, fixtures, troubleshooting
 - [Documentação por módulo](docs/modules/) — referência detalhada de cada pasta
 
 ## Contribuindo
