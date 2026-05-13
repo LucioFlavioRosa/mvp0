@@ -213,7 +213,7 @@ Use `Secrets User` (so leitura), nao `Secrets Officer` - a app nao cria/altera s
 
 ## 4. Configurar secrets no Key Vault
 
-14 secrets devem existir no vault antes do app subir:
+16 secrets devem existir no vault antes do app subir:
 
 | Secret | Origem do valor | Quem cria |
 |---|---|---|
@@ -224,6 +224,8 @@ Use `Secrets User` (so leitura), nao `Secrets Officer` - a app nao cria/altera s
 | `INFOBIP-WEBHOOK-PASSWORD` | Senha do perfil Basic Auth no portal Infobip | DevOps |
 | `ADMIN-USER` | Usuario Basic Auth dos endpoints `/admin/*` (DLQ list/retry) | DevOps |
 | `ADMIN-PASSWORD` | Senha Basic Auth dos endpoints `/admin/*` | DevOps |
+| `AZURE-AD-TENANT-ID` | Portal Azure -> Entra ID -> Overview -> Tenant ID. Usado para validar JWT do `/api/dispatch`. Setup completo em [`AUTH-AZURE-AD.md`](AUTH-AZURE-AD.md). | DevOps |
+| `AZURE-AD-API-CLIENT-ID` | Client ID da App Registration "Bot Aguas API" (passo 1 do AUTH-AZURE-AD.md). Identifica esta API no Azure AD. | DevOps |
 | `DB-SERVER` | `<sql-server>.database.windows.net` (do passo 2.4) | DevOps |
 | `DB-NAME` | `aguasdopara` (do passo 2.4) | DevOps |
 | `DB-USER` | `sqladmin` (do passo 2.4) | DevOps |
@@ -429,6 +431,21 @@ curl -i $APP_URL/admin/dlq
 # 6. Admin DLQ com auth correta (deve aceitar)
 curl -i $APP_URL/admin/dlq -u "<ADMIN-USER>:<ADMIN-PASSWORD>"
 # Esperado: HTTP/1.1 200 OK + {"count":0,"messages":[]}  (vazia em ambiente novo)
+
+# 7. Dispatch sem token (deve negar)
+curl -i -X POST $APP_URL/api/dispatch \
+  -H "Content-Type: application/json" \
+  -d '{"pedido_uuid":"test","parceiros":["x"]}'
+# Esperado: HTTP/1.1 401 Unauthorized (token Azure AD nao enviado)
+# Se vier 503: secrets AZURE-AD-TENANT-ID / AZURE-AD-API-CLIENT-ID ausentes
+
+# 8. Dispatch com token bogus (deve negar)
+curl -i -X POST $APP_URL/api/dispatch \
+  -H "Authorization: Bearer fake.token.here" \
+  -H "Content-Type: application/json" \
+  -d '{"pedido_uuid":"test","parceiros":["x"]}'
+# Esperado: HTTP/1.1 401 (assinatura JWT invalida)
+# Para teste com token REAL, ver docs/AUTH-AZURE-AD.md secao "Smoke test pos-deploy"
 ```
 
 Se algum smoke test falhar, ver passo 12 (troubleshooting).
@@ -467,6 +484,8 @@ Para mudancas de schema SQL, rollback manual com os comentarios `-- Rollback:` q
 | 503 no `/bot` | `verify_infobip_basic_auth` reclama de secrets ausentes | Confirmar `INFOBIP-WEBHOOK-USER`/`PASSWORD` no Key Vault |
 | 401 nas chamadas legitimas do Infobip | Usuario/senha diferentes entre portal Infobip e Key Vault | Re-sincronizar (passo 4 + 9) |
 | 503 em `/admin/dlq*` | `verify_admin_basic_auth` reclama de secrets ausentes | Confirmar `ADMIN-USER`/`ADMIN-PASSWORD` no Key Vault (passo 4) |
+| 503 em `/api/dispatch` | Secrets AZURE-AD ausentes ou scheme nao inicializou | Confirmar `AZURE-AD-TENANT-ID` e `AZURE-AD-API-CLIENT-ID` no Key Vault. Ver log "Azure AD auth nao inicializado" em App Insights |
+| 401 em `/api/dispatch` com token aparentemente valido | Claim do JWT errado (audience, issuer ou scope) | Decodificar token em jwt.ms e conferir: `aud` = `api://<azure-ad-api-client-id>`, `scp` contem `dispatch.write`. Ver `docs/AUTH-AZURE-AD.md` secao Troubleshooting |
 | 404 em `POST /admin/dlq/retry/{id}` mesmo com mensagem visivel em `GET /admin/dlq` | Mensagem pode estar com visibility timeout ativo (alguem chamou retry recentemente) ou TTL expirou | Aguardar 5 min ou re-listar para pegar o ID atual |
 | Mensagens "fantasma" reaparecendo na DLQ | `delete()` falhou pos-retry (pop_receipt mismatch) | Ver log `falha ao deletar mensagem da DLQ` no App Insights; geralmente significa que outro admin processou em paralelo - re-tentar |
 | `pyodbc.OperationalError` SQL | Cold start do Serverless | Aguardar retry exponencial do `DatabaseManager` (ate ~1min); subsequente requests funcionam |

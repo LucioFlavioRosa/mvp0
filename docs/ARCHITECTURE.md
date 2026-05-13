@@ -162,6 +162,26 @@ Antes da migração Twilio→Infobip, o webhook respondia com TwiML como salvagu
 
 **Política da DLQ (intencional):** apenas persiste, sem retry automático. Cada mensagem tem 1 ciclo — enqueue → admin retry manual → delete **obrigatório** (sucesso ou falha do retry). Evita fila poluída com mensagens fantasmas re-tentando sozinhas. Service Bus foi descartado por estar fora do escopo; Storage Queue resolve com semântica simples e custo desprezível.
 
+### Autenticação do `/api/dispatch` via Azure AD JWT (Bearer)
+
+`/api/dispatch` é o único endpoint que recebe ações de usuários humanos (operadores do backoffice disparando ofertas). Por isso usa **OAuth 2.0 / OpenID Connect via Azure AD** em vez de Basic Auth.
+
+**Por que Azure AD aqui (e não Basic Auth):**
+
+- Cada chamada carrega identidade do operador (`oid`, email, name) — auditoria de quem disparou cada dispatch
+- Senha do operador nunca chega no bot (apenas JWT assinado)
+- Revogar acesso = desativar conta Azure AD (não precisa rotacionar credencial compartilhada)
+- Suporta MFA, conditional access, group-based permissions sem código adicional
+
+**Implementação:**
+
+- `app/core/azure_auth.py` instancia `SingleTenantAzureAuthorizationCodeBearer` (lib `fastapi-azure-auth`) com `AZURE-AD-TENANT-ID` e `AZURE-AD-API-CLIENT-ID` do Key Vault
+- Validação JWT é **offline** — chaves públicas do tenant são cacheadas (24h refresh)
+- Wrapper `verify_dispatch_auth` em `main.py` fail-safe: 503 se secrets ausentes, 401 se token inválido
+- Log estruturado registra `operator_oid` e hash do email (`mask_pii`) em cada dispatch
+
+Setup completo do App Registration + integração MSAL.js no backoffice: `docs/AUTH-AZURE-AD.md`.
+
 ### Autenticação do webhook via Basic Auth + comparação constant-time
 
 A Infobip envia `Authorization: Basic <base64(user:password)>` em cada request a `POST /bot`, conforme perfil de segurança configurado no portal. A dependência FastAPI `verify_infobip_basic_auth` (em `main.py`) lê `INFOBIP-WEBHOOK-USER` e `INFOBIP-WEBHOOK-PASSWORD` do Key Vault e valida com `secrets.compare_digest` (constant-time — previne timing attacks).

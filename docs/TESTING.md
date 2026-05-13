@@ -4,11 +4,11 @@
 
 ## Visão geral
 
-A suite hoje tem **88 testes unitários** distribuídos em 10 arquivos. Cobertura global em **46%**, com cobertura cirúrgica nos caminhos críticos: autenticação, retry transient, DLQ, dispatch, health checks.
+A suite hoje tem **93 testes unitários** distribuídos em 11 arquivos. Cobertura global em **~47%**, com cobertura cirúrgica nos caminhos críticos: autenticação (Basic Auth + Azure AD JWT), retry transient, DLQ, dispatch, health checks.
 
 | Métrica | Valor |
 |---|---|
-| Total de testes | 88 |
+| Total de testes | 93 |
 | Tempo de execução (suite completa) | ~1s |
 | Não-flaky em 3+ rodadas consecutivas | OK |
 | Sem dependência externa (rede, disco, DB real) | OK |
@@ -136,6 +136,14 @@ Cobre: `enqueue` happy + 2 cenários fail-safe (queue offline / `send_message` l
 Cobre: sessão nova (`START`), sessão ativa (step + dados), timeout 5 min (`START` + `step_backup`), passos terminais (sem `step_backup`), `_save_session` skipa `START`/`NO_UPDATE` e grava demais, oferta pendente intercepta fluxo de cadastro, saudação no meio do fluxo grava `step_backup`.
 
 > **Detalhe técnico**: usa `BotEngine.__new__` + injeção de atributos. Razão: `__init__` é pesado (instancia 7 módulos de etapa, alguns com Google Maps client no construtor).
+
+### `tests/unit/test_dispatch_auth.py` (5 testes)
+
+`/api/dispatch` com auth Azure AD JWT.
+
+Cobre: 503 quando scheme não inicializado (`AZURE-AD-*` secrets ausentes); 200 com user mockado (override de dependency) + auditoria do `operator_oid` no log; erro interno mantém oid no log de erro; 422 Pydantic ainda funciona mesmo com token; email do operador é mascarado via `mask_pii` (LGPD).
+
+> **Detalhe técnico**: usa `app.dependency_overrides[verify_dispatch_auth] = override_auth` do FastAPI pra simular JWT validado. Evita mockar a lib `fastapi-azure-auth` inteira.
 
 ### `tests/unit/test_health_check.py` (17 testes)
 

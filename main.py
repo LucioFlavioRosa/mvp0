@@ -5,7 +5,7 @@ configure_telemetry()
 
 import secrets
 import time
-from fastapi import Depends, FastAPI, BackgroundTasks, HTTPException, Response, status
+from fastapi import Depends, FastAPI, BackgroundTasks, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel
@@ -22,6 +22,7 @@ from app.core.config import Settings
 from app.core.telemetry import get_logger, mask_pii, correlation_id_middleware
 from app.core import log_dimensions as ld
 from app.core import health
+from app.core.azure_auth import get_azure_scheme, get_init_error
 
 logger = get_logger(__name__)
 
@@ -501,12 +502,59 @@ def admin_dlq_retry(message_id: str):
     }
 
 
+# ==============================================================================
+# 4.1 AUTH DO /api/dispatch VIA AZURE AD
+# ==============================================================================
+# Auth dependency wrapper: o scheme pode ser None se AZURE-AD-TENANT-ID ou
+# AZURE-AD-API-CLIENT-ID estiverem ausentes no Key Vault. Nesse caso fail-safe:
+# 503 + log critical (sem auth configurada == sem dispatch).
+#
+# Quando scheme esta inicializado, retorna o User do fastapi-azure-auth com
+# claims validados (oid, email, name, scp, etc).
+_azure_scheme_instance = get_azure_scheme()
+
+
+
+
+async def verify_dispatch_auth(request: Request):
+    """Wrapper fail-safe do Azure AD scheme.
+
+    - Se scheme nao inicializado (secrets ausentes): 503 + log critical
+    - Se token ausente/invalido/expirado: 401 (fastapi-azure-auth levanta)
+    - Se OK: retorna User com claims validados
+    """
+    if _azure_scheme_instance is None:
+        err = get_init_error() or "Azure AD scheme nao inicializado"
+        logger.critical(
+            "dispatch auth nao configurada",
+            extra={"custom_dimensions": {
+                ld.OPERATION: "dispatch_auth",
+                "init_error": err,
+            }},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="dispatch auth not configured",
+        )
+    return await _azure_scheme_instance(request)
+
+
 @app.post("/api/dispatch")
-async def dispatch_order(data: DispatchRequest):
+async def dispatch_order(data: DispatchRequest, user=Depends(verify_dispatch_auth)):
+    """Disparo de oferta a parceiros via WhatsApp.
+
+    Auth: Bearer JWT do Azure AD (tenant Aegea). Operador autentica via SSO
+    no backoffice (MSAL.js), backoffice envia token delegado nesta chamada.
+    """
+    operator_oid = user.claims.get("oid", "unknown") if user else "unknown"
+    operator_email = user.claims.get("preferred_username") or user.claims.get("email", "unknown")
+
     logger.info("dispatch recebido", extra={"custom_dimensions": {
         ld.OPERATION: "dispatch",
         ld.PEDIDO_ID: data.pedido_uuid,
         "parceiros_count": len(data.parceiros),
+        "operator_oid": operator_oid,
+        ld.SENDER_HASH: mask_pii(operator_email),
     }})
     try:
         result = dispatch_service.enviar_oferta_para_prestadores(data.parceiros, data.pedido_uuid)
@@ -516,5 +564,6 @@ async def dispatch_order(data: DispatchRequest):
                      extra={"custom_dimensions": {
                          ld.OPERATION: "dispatch",
                          ld.PEDIDO_ID: data.pedido_uuid,
+                         "operator_oid": operator_oid,
                      }})
         return {"status": "error", "message": "internal_error"}
