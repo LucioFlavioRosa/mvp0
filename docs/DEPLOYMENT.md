@@ -269,7 +269,8 @@ az webapp config appsettings set \
     APPLICATIONINSIGHTS_CONNECTION_STRING="$APPINSIGHTS_CONN" \
     LOG_LEVEL="INFO" \
     LOG_PII_SALT="<gere-uma-string-aleatoria>" \
-    SCM_DO_BUILD_DURING_DEPLOYMENT="true"
+    SCM_DO_BUILD_DURING_DEPLOYMENT="true" \
+    ALLOWED_ORIGINS="https://backoffice-aegea-$ENV.azurewebsites.net"
 ```
 
 | Variavel | Default | Proposito |
@@ -279,6 +280,7 @@ az webapp config appsettings set \
 | `LOG_LEVEL` | `INFO` | Nivel raiz do logger; trocar para `DEBUG` durante investigacao |
 | `LOG_PII_SALT` | (recomendado) | Salt do hash SHA-256 para mascarar PII em logs. Rotacionavel - rotacionar invalida correlacao de logs antigos (intencional). |
 | `SCM_DO_BUILD_DURING_DEPLOYMENT` | `true` | Habilita Oryx build (pip install) durante deploy |
+| `ALLOWED_ORIGINS` | (obrigatorio quando ha frontend) | Lista comma-separated de URLs do backoffice autorizadas a chamar `/api/dispatch` via CORS. Ex: `https://backoffice-aegea-prod.azurewebsites.net,https://backoffice-aegea-staging.azurewebsites.net,https://backoffice-aegea-dev.azurewebsites.net`. Vazio bloqueia TODAS origens cross-site (fail-safe). |
 
 Definir startup command:
 
@@ -446,6 +448,22 @@ curl -i -X POST $APP_URL/api/dispatch \
   -d '{"pedido_uuid":"test","parceiros":["x"]}'
 # Esperado: HTTP/1.1 401 (assinatura JWT invalida)
 # Para teste com token REAL, ver docs/AUTH-AZURE-AD.md secao "Smoke test pos-deploy"
+
+# 9. CORS preflight com origin permitido (deve retornar header allow-origin)
+curl -i -X OPTIONS $APP_URL/api/dispatch \
+  -H "Origin: https://backoffice-aegea-prod.azurewebsites.net" \
+  -H "Access-Control-Request-Method: POST" \
+  -H "Access-Control-Request-Headers: Authorization, Content-Type"
+# Esperado: 200 OK + 'Access-Control-Allow-Origin: https://backoffice-aegea-prod.azurewebsites.net'
+# Se NAO vier header allow-origin: ALLOWED_ORIGINS nao esta configurado OU origin nao bate exatamente
+#   (conferir: protocolo https://, sem barra no final, dominio exato)
+
+# 10. CORS preflight com origin nao listado (NAO deve retornar header allow-origin)
+curl -i -X OPTIONS $APP_URL/api/dispatch \
+  -H "Origin: https://site-malicioso.com" \
+  -H "Access-Control-Request-Method: POST"
+# Esperado: SEM header 'Access-Control-Allow-Origin'
+# Se retornar: ALLOWED_ORIGINS esta com '*' ou wildcard inseguro
 ```
 
 Se algum smoke test falhar, ver passo 12 (troubleshooting).
@@ -486,6 +504,8 @@ Para mudancas de schema SQL, rollback manual com os comentarios `-- Rollback:` q
 | 503 em `/admin/dlq*` | `verify_admin_basic_auth` reclama de secrets ausentes | Confirmar `ADMIN-USER`/`ADMIN-PASSWORD` no Key Vault (passo 4) |
 | 503 em `/api/dispatch` | Secrets AZURE-AD ausentes ou scheme nao inicializou | Confirmar `AZURE-AD-TENANT-ID` e `AZURE-AD-API-CLIENT-ID` no Key Vault. Ver log "Azure AD auth nao inicializado" em App Insights |
 | 401 em `/api/dispatch` com token aparentemente valido | Claim do JWT errado (audience, issuer ou scope) | Decodificar token em jwt.ms e conferir: `aud` = `api://<azure-ad-api-client-id>`, `scp` contem `dispatch.write`. Ver `docs/AUTH-AZURE-AD.md` secao Troubleshooting |
+| Browser do backoffice mostra "CORS error" no console | `ALLOWED_ORIGINS` nao inclui a URL exata do backoffice OU env var ausente | Conferir `ALLOWED_ORIGINS` no App Service Settings - protocolo `https://`, sem barra no final, dominio exato. Smoke test #9 com curl + `Origin` header reproduz |
+| `/api/dispatch` aceita requests sem origin (curl/Postman) mesmo com CORS apertado | Comportamento esperado | CORS so se aplica a requests cross-origin de browser (com header `Origin`). Server-to-server sem header `Origin` nao eh bloqueado por CORS - eh bloqueado pela auth Azure AD que ja exigimos |
 | 404 em `POST /admin/dlq/retry/{id}` mesmo com mensagem visivel em `GET /admin/dlq` | Mensagem pode estar com visibility timeout ativo (alguem chamou retry recentemente) ou TTL expirou | Aguardar 5 min ou re-listar para pegar o ID atual |
 | Mensagens "fantasma" reaparecendo na DLQ | `delete()` falhou pos-retry (pop_receipt mismatch) | Ver log `falha ao deletar mensagem da DLQ` no App Insights; geralmente significa que outro admin processou em paralelo - re-tentar |
 | `pyodbc.OperationalError` SQL | Cold start do Serverless | Aguardar retry exponencial do `DatabaseManager` (ate ~1min); subsequente requests funcionam |
