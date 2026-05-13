@@ -9,6 +9,8 @@ from typing import Any, Optional
 
 import requests
 
+from app.core.retry import transient_retry
+
 
 class InfobipClient:
     def __init__(self, api_key: str, base_url: str, timeout: float = 10.0) -> None:
@@ -66,7 +68,13 @@ class InfobipClient:
         }
         return self._post("/whatsapp/1/message/template", payload)
 
+    @transient_retry
     def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """POST autenticado pra API Infobip.
+
+        Decorado com @transient_retry: 2 tentativas em caso de timeout,
+        connection error ou HTTP 5xx. 4xx propaga direto (request invalida).
+        """
         url = f"{self._base_url}{path}"
         response = self._session.post(url, json=payload, timeout=self._timeout)
         response.raise_for_status()

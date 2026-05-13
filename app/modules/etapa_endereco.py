@@ -1,5 +1,6 @@
 from app.modules.common import GeradorResposta
 from app.core.database import DatabaseManager
+from app.core.retry import transient_retry
 from app.core.telemetry import get_logger, mask_pii
 from app.core import log_dimensions as ld
 import requests
@@ -42,19 +43,33 @@ class EtapaEndereco:
         # ID do Template que inicia a proxima etapa (Habilidades)
         self.TEMPLATE_HIDROMETRO = "HX24e1bcb7e514d6fca272f38691c76a33"
 
+    @staticmethod
+    @transient_retry
+    def _viacep_raw(cep):
+        """Chamada bruta ao ViaCEP. Levanta exception em erro (decorator faz retry)."""
+        url = f"https://viacep.com.br/ws/{cep}/json/"
+        res = requests.get(url, timeout=5)
+        res.raise_for_status()
+        return res.json()
+
     def _consultar_viacep(self, cep):
+        """Wrapper que retorna None em erro (mantem contrato com caller)."""
         try:
-            url = f"https://viacep.com.br/ws/{cep}/json/"
-            res = requests.get(url, timeout=5)
-            dados = res.json()
-            if 'erro' in dados:
-                return None
-            return dados
-        except Exception:
+            dados = self._viacep_raw(cep)
+        except requests.RequestException:
+            # Timeout / connection error / HTTPError apos retry: CEP indisponivel
             return None
+        if 'erro' in dados:
+            return None
+        return dados
+
+    @transient_retry
+    def _geocode_raw(self, endereco_completo):
+        """Chamada bruta ao Google Maps. Levanta exception em erro (decorator faz retry)."""
+        return self.gmaps.geocode(endereco_completo)
 
     def _obter_lat_long(self, rua, numero, bairro, cidade, cep):
-        """Usa googlemaps pra obter latitude e longitude. Retorna (lat, lng) ou (None, None)."""
+        """Usa googlemaps para obter latitude e longitude. Retorna (lat, lng) ou (None, None)."""
         if not self.gmaps:
             logger.warning("Google Maps Client inativo",
                            extra={"custom_dimensions": {ld.OPERATION: "geocode"}})
@@ -68,19 +83,7 @@ class EtapaEndereco:
                      }})
 
         try:
-            result = self.gmaps.geocode(endereco_completo)
-
-            if result and len(result) > 0:
-                location = result[0]['geometry']['location']
-                return location['lat'], location['lng']
-            else:
-                logger.warning("Google Maps: endereco nao encontrado",
-                               extra={"custom_dimensions": {
-                                   ld.OPERATION: "geocode",
-                                   ld.RESULT: "not_found",
-                               }})
-                return None, None
-
+            result = self._geocode_raw(endereco_completo)
         except Exception:
             logger.error("erro na API do Google Maps", exc_info=True,
                          extra={"custom_dimensions": {
@@ -88,6 +91,17 @@ class EtapaEndereco:
                              ld.EXTERNAL_SERVICE: "google_maps",
                          }})
             return None, None
+
+        if result and len(result) > 0:
+            location = result[0]['geometry']['location']
+            return location['lat'], location['lng']
+
+        logger.warning("Google Maps: endereco nao encontrado",
+                       extra={"custom_dimensions": {
+                           ld.OPERATION: "geocode",
+                           ld.RESULT: "not_found",
+                       }})
+        return None, None
 
     def processar_cep(self, texto, sender_id):
         cep_limpo = re.sub(r'\D', '', texto)

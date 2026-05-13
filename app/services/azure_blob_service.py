@@ -2,6 +2,7 @@ import requests
 from azure.storage.blob import BlobServiceClient
 
 from app.core.config import Settings
+from app.core.retry import transient_retry
 from app.core.telemetry import get_logger
 from app.core import log_dimensions as ld
 
@@ -41,6 +42,27 @@ class AzureBlobService:
                          }})
             self.blob_service_client = None
 
+    @transient_retry
+    def _download_midia(self, media_url):
+        """Baixa midia do Infobip. Decorado com retry transient (2 tentativas).
+
+        Levanta requests.HTTPError em 4xx/5xx (caller decide o que fazer com 4xx;
+        5xx ja sao re-tentadas pelo transient_retry).
+        """
+        logger.debug("baixando midia do Infobip",
+                     extra={"custom_dimensions": {
+                         ld.OPERATION: "download_media",
+                         "media_url": media_url,
+                     }})
+        response = requests.get(
+            media_url,
+            stream=True,
+            timeout=10,
+            headers={"Authorization": f"App {self.infobip_api_key}"},
+        )
+        response.raise_for_status()
+        return response
+
     def upload_from_url(self, media_url, container_name, blob_name):
         """Baixa midia da URL do Infobip e sobe pro Azure Blob Storage.
 
@@ -54,40 +76,43 @@ class AzureBlobService:
                            extra={"custom_dimensions": {ld.OPERATION: "upload_media"}})
             return None
 
+        # Download (com retry transient via decorator)
         try:
-            logger.debug("baixando midia do Infobip",
+            response = self._download_midia(media_url)
+        except requests.HTTPError as exc:
+            # 4xx propaga aqui (5xx ja foi re-tentado pelo transient_retry).
+            # 4xx geralmente eh URL invalida ou auth/permissao - WARNING.
+            status_code = exc.response.status_code if exc.response is not None else None
+            logger.warning("falha HTTP ao baixar midia",
+                           extra={"custom_dimensions": {
+                               ld.OPERATION: "download_media",
+                               ld.EXTERNAL_STATUS: status_code,
+                               ld.EXTERNAL_SERVICE: "infobip",
+                           }})
+            return None
+        except Exception:
+            logger.error("erro critico no download da midia", exc_info=True,
                          extra={"custom_dimensions": {
                              ld.OPERATION: "download_media",
-                             "media_url": media_url,
                          }})
-            response = requests.get(
-                media_url,
-                stream=True,
-                headers={"Authorization": f"App {self.infobip_api_key}"},
-            )
-            if response.status_code == 200:
-                container_client = self.blob_service_client.get_container_client(container_name)
-                if not container_client.exists():
-                    container_client.create_container()
-                blob_client = container_client.get_blob_client(blob_name)
-                blob_client.upload_blob(response.content, overwrite=True)
-                logger.info("upload Azure Blob concluido",
-                            extra={"custom_dimensions": {
-                                ld.OPERATION: "upload_media",
-                                "container": container_name,
-                                "blob_name": blob_name,
-                            }})
-                return blob_client.url
-            else:
-                logger.warning("falha HTTP ao baixar midia",
-                               extra={"custom_dimensions": {
-                                   ld.OPERATION: "download_media",
-                                   ld.EXTERNAL_STATUS: response.status_code,
-                                   ld.EXTERNAL_SERVICE: "infobip",
-                               }})
-                return None
+            return None
+
+        # Upload pro Azure Blob
+        try:
+            container_client = self.blob_service_client.get_container_client(container_name)
+            if not container_client.exists():
+                container_client.create_container()
+            blob_client = container_client.get_blob_client(blob_name)
+            blob_client.upload_blob(response.content, overwrite=True)
+            logger.info("upload Azure Blob concluido",
+                        extra={"custom_dimensions": {
+                            ld.OPERATION: "upload_media",
+                            "container": container_name,
+                            "blob_name": blob_name,
+                        }})
+            return blob_client.url
         except Exception:
-            logger.error("erro critico no upload", exc_info=True,
+            logger.error("erro critico no upload pro Azure Blob", exc_info=True,
                          extra={"custom_dimensions": {
                              ld.OPERATION: "upload_media",
                              "container": container_name,
