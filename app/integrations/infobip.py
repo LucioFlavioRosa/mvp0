@@ -3,17 +3,36 @@ Cliente HTTP fino pra API WhatsApp do Infobip.
 
 Mantém uma única responsabilidade: enviar requisições autenticadas.
 Não faz parsing de webhook nem lógica de negócio.
+
+Falhas pós retry transient sao enfileiradas na DLQ (Azure Storage Queue)
+antes de propagar pro caller - garante visibilidade de mensagens perdidas
+sem retry automatico (politica: 2 tentativas total).
 """
 
+from __future__ import annotations
+
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 import requests
 
 from app.core.retry import transient_retry
+from app.core.telemetry import get_logger, mask_pii
+from app.core import log_dimensions as ld
+from app.integrations.dlq import DLQClient
+from app.schemas.dlq import DLQMessage
+
+logger = get_logger(__name__)
 
 
 class InfobipClient:
-    def __init__(self, api_key: str, base_url: str, timeout: float = 10.0) -> None:
+    def __init__(
+        self,
+        api_key: str,
+        base_url: str,
+        timeout: float = 10.0,
+        dlq: Optional[DLQClient] = None,
+    ) -> None:
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
         self._session = requests.Session()
@@ -24,13 +43,16 @@ class InfobipClient:
                 "Accept": "application/json",
             }
         )
+        # DLQ e instanciada por default; passar dlq=None desabilita (uso em testes).
+        # DLQClient e fail-safe internamente - se Storage Queue indisponivel, vira no-op.
+        self._dlq = dlq if dlq is not None else DLQClient()
 
     def close(self) -> None:
         self._session.close()
 
     def send_text(self, sender: str, to: str, text: str) -> dict[str, Any]:
         payload = {"from": sender, "to": to, "content": {"text": text}}
-        return self._post("/whatsapp/1/message/text", payload)
+        return self._dispatch("send_text", "/whatsapp/1/message/text", payload, sender=sender, to=to)
 
     def send_image(
         self,
@@ -43,7 +65,7 @@ class InfobipClient:
         if caption:
             content["caption"] = caption
         payload = {"from": sender, "to": to, "content": content}
-        return self._post("/whatsapp/1/message/image", payload)
+        return self._dispatch("send_image", "/whatsapp/1/message/image", payload, sender=sender, to=to)
 
     def send_template(
         self,
@@ -66,7 +88,38 @@ class InfobipClient:
                 }
             ]
         }
-        return self._post("/whatsapp/1/message/template", payload)
+        return self._dispatch("send_template", "/whatsapp/1/message/template", payload, sender=sender, to=to)
+
+    def _dispatch(
+        self,
+        operation: str,
+        path: str,
+        payload: dict[str, Any],
+        sender: str,
+        to: str,
+    ) -> dict[str, Any]:
+        """Envia pro Infobip via _post (com retry transient).
+
+        Se pos-retry ainda falhar, enfileira na DLQ antes de re-levantar -
+        garante que a mensagem nao se perde silenciosamente.
+        """
+        try:
+            return self._post(path, payload)
+        except Exception as exc:
+            # Falha apos esgotar retry transient (2 tentativas).
+            # Persiste na DLQ antes de propagar - politica de 2 tentativas total
+            # com cleanup obrigatorio (sem retry automatico do worker).
+            dlq_msg = DLQMessage(
+                operation=operation,
+                external_service="infobip",
+                payload={"path": path, "body": payload, "sender": sender, "to": to},
+                sender_hash=mask_pii(to),
+                attempts=2,  # retry transient ja consumiu as 2 tentativas
+                last_error=f"{type(exc).__name__}: {str(exc)[:200]}",
+                errored_at=datetime.now(timezone.utc),
+            )
+            self._dlq.enqueue(dlq_msg)
+            raise
 
     @transient_retry
     def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
