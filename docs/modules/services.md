@@ -80,7 +80,7 @@ class AzureBlobService:
 - **Auth header**: `Authorization: App <INFOBIP-API-KEY>` para baixar mídia do Infobip. Diferente do Twilio antigo que usava Basic Auth.
 - **⚠ URL pública vs privada**: dependendo da config do tenant Infobip, mídia inbound pode vir como URL pública (sem auth). Se receber 401/403 ao baixar, remover o header. Ver `MIGRATION_NOTES.md` item 5.
 - **Container**: criado on-demand (`create_container` se não existe). Recomendável criar previamente com policy de acesso correta.
-- **Sem retry**: erro de download retorna `None` direto.
+- **Retry transient no download**: `_download_midia` é decorado com `@transient_retry` — 2 tentativas em timeout/connection/5xx. 4xx (URL inválida, auth) loga WARNING e retorna `None` (não tenta de novo). Erro persistente retorna `None`.
 
 ### `ParceiroService`
 
@@ -135,7 +135,7 @@ class SessionService:
 
 Itens que afetam mais de um service e valeria endereçar:
 
-- **Sem retry / dead-letter queue** em nenhum envio outbound. Falha de Infobip = mensagem perdida.
+- **Retry transient implementado** em chamadas HTTP externas (Infobip, Blob download, ViaCEP, Google Maps) via `app/core/retry.py`. Dead-letter queue continua pendente (sem Service Bus) — falhas persistentes perdem a mensagem.
 - **Mocks (Serpro, ViaCEP, Google Maps)** ainda no `ParceiroService`. ⚠ Bloqueador de prod.
 - **`time.sleep`** em vários lugares (`WhatsAppService._processar_sequencia`, `main.enviar_sequencia_background`) — segura a thread. Pra escala, considerar Service Bus + worker.
 

@@ -37,7 +37,7 @@ class InfobipClient:
 - **Números**: o `sender` e `to` são E164 sem prefixo `whatsapp:` nem `+` (ex: `5511999998888`). Strip de prefixo é responsabilidade do caller (`WhatsAppService._strip_whatsapp_prefix`).
 - **`send_template`**: usa array `placeholders` (posicional), não dict por chave como o Twilio (`content_variables`). A ordem é a do template cadastrado no portal Infobip.
 - **Erros 4xx/5xx**: `raise_for_status()` levanta `requests.HTTPException`. Caller decide se faz retry ou loga e segue.
-- **Sem retry interno**: o client é intencionalmente fino. Adicionar retry (com `tenacity`) ficaria a cargo do caller — ver "Pontos de fragilidade" em [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md).
+- **Retry transient**: o método `_post` é decorado com `@transient_retry` (em `app/core/retry.py`) — 2 tentativas com backoff exponencial 1-5s, só em `requests.Timeout`, `requests.ConnectionError` ou HTTP 5xx. 4xx propaga direto (request inválida não melhora com retry). Falhas após retry levantam exceção pro caller decidir (geralmente log + drop).
 
 ### Schemas Pydantic
 
