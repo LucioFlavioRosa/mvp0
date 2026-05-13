@@ -1,4 +1,3 @@
-from app.modules.common import GeradorResposta
 from app.core.database import DatabaseManager
 from app.core.telemetry import get_logger, mask_pii
 from app.core import log_dimensions as ld

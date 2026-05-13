@@ -18,7 +18,6 @@ import requests
 
 from app.core.retry import transient_retry
 from app.core.telemetry import get_logger, mask_pii
-from app.core import log_dimensions as ld
 from app.integrations.dlq import DLQClient
 from app.schemas.dlq import DLQMessage
 

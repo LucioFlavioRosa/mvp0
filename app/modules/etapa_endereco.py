@@ -1,4 +1,3 @@
-from app.modules.common import GeradorResposta
 from app.core.database import DatabaseManager
 from app.core.retry import transient_retry
 from app.core.telemetry import get_logger, mask_pii
