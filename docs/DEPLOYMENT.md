@@ -1,7 +1,7 @@
 # Deployment - Bot Aguas do Para
 
 > Runbook operacional para provisionar, configurar e subir a aplicacao em Azure.
-> _Ultima atualizacao: PR #16 (docs/deployment-runbook)_
+> _Ultima atualizacao: PR `feat/dlq-admin-endpoints` (Storage Queue + 2 secrets admin)._
 
 > Este documento descreve o ambiente atual: **Azure App Service Linux + Python 3.12**. Se o destino mudar (AKS, ACI, Functions), refazer este doc.
 
@@ -144,7 +144,27 @@ az storage account show-connection-string \
   --query connectionString -o tsv
 ```
 
-### 2.6 App Service
+### 2.6 Azure Storage Queue (Dead-Letter Queue)
+
+Fila para persistir falhas de envio outbound apos esgotamento do retry transient (PR `feat/dlq-persistence` + `feat/dlq-admin-endpoints`).
+
+```bash
+az storage queue create \
+  --name outbound-dlq \
+  --account-name $STORAGE \
+  --account-key $ACCOUNT_KEY
+```
+
+> A fila reusa a mesma storage account dos containers Blob (mesmo secret `CONNECTION-STRING-AZURE-STORAGE`). A app cria a fila on-demand via `QueueClient.create_queue()` (idempotente), entao este comando e apenas para garantir que existe antes do primeiro envio.
+
+**Caracteristicas da fila:**
+
+- Nome fixo: `outbound-dlq` (codado em `app/integrations/dlq.py:QUEUE_NAME`)
+- TTL das mensagens: 7 dias (default + maximo do Storage Queue)
+- Visibility timeout no retry admin: 5 min (`RECEIVE_VISIBILITY_SECONDS = 300`)
+- Politica: 1 ciclo de vida por mensagem (enqueue -> admin retry manual -> delete obrigatorio)
+
+### 2.7 App Service
 
 ```bash
 APP_NAME=app-aegea-$ENV-brazil   # dev = "app-aegea-dev-brazil" (igual ao workflow GH atual)
@@ -193,7 +213,7 @@ Use `Secrets User` (so leitura), nao `Secrets Officer` - a app nao cria/altera s
 
 ## 4. Configurar secrets no Key Vault
 
-12 secrets devem existir no vault antes do app subir:
+14 secrets devem existir no vault antes do app subir:
 
 | Secret | Origem do valor | Quem cria |
 |---|---|---|
@@ -202,11 +222,13 @@ Use `Secrets User` (so leitura), nao `Secrets Officer` - a app nao cria/altera s
 | `INFOBIP-SENDER` | Numero WhatsApp registrado na Infobip (E164 sem prefixo, ex: `551133334444`) | DevOps |
 | `INFOBIP-WEBHOOK-USER` | Usuario do perfil Basic Auth no portal Infobip | DevOps |
 | `INFOBIP-WEBHOOK-PASSWORD` | Senha do perfil Basic Auth no portal Infobip | DevOps |
+| `ADMIN-USER` | Usuario Basic Auth dos endpoints `/admin/*` (DLQ list/retry) | DevOps |
+| `ADMIN-PASSWORD` | Senha Basic Auth dos endpoints `/admin/*` | DevOps |
 | `DB-SERVER` | `<sql-server>.database.windows.net` (do passo 2.4) | DevOps |
 | `DB-NAME` | `aguasdopara` (do passo 2.4) | DevOps |
 | `DB-USER` | `sqladmin` (do passo 2.4) | DevOps |
 | `DB-PASSWORD` | Senha do admin SQL (gerada no passo 2.4) | DevOps |
-| `CONNECTION-STRING-AZURE-STORAGE` | Output de `az storage account show-connection-string` (passo 2.5) | DevOps |
+| `CONNECTION-STRING-AZURE-STORAGE` | Output de `az storage account show-connection-string` (passo 2.5). Usado tambem pela DLQ (Storage Queue, passo 2.6). | DevOps |
 | `GOOGLE-MAPS-API-KEY` | Google Cloud Console -> APIs & Credentials | DevOps |
 | `VIDEO-URL` | URL publica do video de apresentacao (Blob com SAS publica) | Negocio |
 
@@ -366,6 +388,15 @@ curl -i -X POST $APP_URL/bot \
 
 # 4. Logs estruturados aparecem no App Insights
 # Portal -> Application Insights -> Transaction search -> filtrar por "operation == webhook_inbound"
+
+# 5. Admin DLQ sem auth (deve negar)
+curl -i $APP_URL/admin/dlq
+# Esperado: HTTP/1.1 401 Unauthorized
+# Se vier 503: secrets ADMIN-USER/ADMIN-PASSWORD nao configurados
+
+# 6. Admin DLQ com auth correta (deve aceitar)
+curl -i $APP_URL/admin/dlq -u "<ADMIN-USER>:<ADMIN-PASSWORD>"
+# Esperado: HTTP/1.1 200 OK + {"count":0,"messages":[]}  (vazia em ambiente novo)
 ```
 
 Se algum smoke test falhar, ver passo 12 (troubleshooting).
@@ -403,6 +434,9 @@ Para mudancas de schema SQL, rollback manual com os comentarios `-- Rollback:` q
 | App nao inicia (HTTP 500 no `/`) | `az webapp log tail -n $APP_NAME -g rg-aguasdopara-$ENV` | Geralmente secret faltando ou `AZURE_KEYVAULT_URL` errada |
 | 503 no `/bot` | `verify_infobip_basic_auth` reclama de secrets ausentes | Confirmar `INFOBIP-WEBHOOK-USER`/`PASSWORD` no Key Vault |
 | 401 nas chamadas legitimas do Infobip | Usuario/senha diferentes entre portal Infobip e Key Vault | Re-sincronizar (passo 4 + 9) |
+| 503 em `/admin/dlq*` | `verify_admin_basic_auth` reclama de secrets ausentes | Confirmar `ADMIN-USER`/`ADMIN-PASSWORD` no Key Vault (passo 4) |
+| 404 em `POST /admin/dlq/retry/{id}` mesmo com mensagem visivel em `GET /admin/dlq` | Mensagem pode estar com visibility timeout ativo (alguem chamou retry recentemente) ou TTL expirou | Aguardar 5 min ou re-listar para pegar o ID atual |
+| Mensagens "fantasma" reaparecendo na DLQ | `delete()` falhou pos-retry (pop_receipt mismatch) | Ver log `falha ao deletar mensagem da DLQ` no App Insights; geralmente significa que outro admin processou em paralelo - re-tentar |
 | `pyodbc.OperationalError` SQL | Cold start do Serverless | Aguardar retry exponencial do `DatabaseManager` (ate ~1min); subsequente requests funcionam |
 | Midia inbound retorna 401 ao baixar | Header `Authorization: App <key>` invalido ou URL exige outro auth | Confirmar `INFOBIP-API-KEY`. Se URLs sao publicas no tenant, remover header em `azure_blob_service.py:66` |
 | Logs nao aparecem no App Insights | `APPLICATIONINSIGHTS_CONNECTION_STRING` errada ou ausente | Confirmar App Setting + restart |
