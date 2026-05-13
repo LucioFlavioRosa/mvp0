@@ -167,14 +167,17 @@ class DLQClient:
         match = None
         for m in received:
             if m.id == message_id and match is None:
-                # Re-esconde a mensagem alvo com visibility timeout normal
-                self.queue.update_message(
+                # Re-esconde a mensagem alvo com visibility timeout normal.
+                # IMPORTANTE: update_message retorna a mensagem com pop_receipt
+                # atualizado - usar esse, senao o delete posterior falha com
+                # "pop receipt mismatch".
+                updated = self.queue.update_message(
                     message=m,
                     visibility_timeout=RECEIVE_VISIBILITY_SECONDS,
                 )
                 match = {
                     "id": m.id,
-                    "pop_receipt": m.pop_receipt,
+                    "pop_receipt": updated.pop_receipt,
                     "content": _safe_parse(m.content),
                     "dequeue_count": m.dequeue_count,
                 }

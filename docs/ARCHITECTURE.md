@@ -156,9 +156,11 @@ Azure SQL Serverless pode demorar até 1 minuto pra acordar de pausa. Sem retry,
 
 `WhatsAppService.enviar_resposta` dispara `threading.Thread` para não bloquear o caller (webhook handler ou dispatch). **Trade-off**: se a app cai, mensagens em voo são perdidas — sem fila persistente. Endereçar via Service Bus + worker se a operação ficar crítica.
 
-### Sem fallback de resposta (post-migração)
+### Sem fallback de resposta (post-migração) + DLQ assistida
 
-Antes da migração Twilio→Infobip, o webhook respondia com TwiML como salvaguarda. Hoje, se a chamada outbound falha após retries transientes (timeout/5xx, 2 tentativas via `app/core/retry.py`), o parceiro **não recebe nada** — só sai log de erro. Falhas persistentes (auth, 4xx, ou 5xx prolongado) ainda perdem a mensagem silenciosamente. ⚠ Queue / dead-letter queue continua pendente (`MIGRATION_NOTES.md` item 3) — bloqueada pela ausência de Azure Service Bus no escopo atual.
+Antes da migração Twilio→Infobip, o webhook respondia com TwiML como salvaguarda. Hoje, se a chamada outbound falha após retries transientes (timeout/5xx, 2 tentativas via `app/core/retry.py`), a falha é **persistida na DLQ** (Azure Storage Queue `outbound-dlq`, ver `app/integrations/dlq.py`) e o parceiro não recebe na hora — mas a mensagem é recuperável manualmente via `POST /admin/dlq/retry/{message_id}` (autenticado com `ADMIN-USER`/`ADMIN-PASSWORD`). Lista pendente via `GET /admin/dlq` (peek).
+
+**Política da DLQ (intencional):** apenas persiste, sem retry automático. Cada mensagem tem 1 ciclo — enqueue → admin retry manual → delete **obrigatório** (sucesso ou falha do retry). Evita fila poluída com mensagens fantasmas re-tentando sozinhas. Service Bus foi descartado por estar fora do escopo; Storage Queue resolve com semântica simples e custo desprezível.
 
 ### Autenticação do webhook via Basic Auth + comparação constant-time
 
@@ -194,7 +196,7 @@ Itens que valeria endereçar (ordem de impacto):
 
 2. **Payload de template inconsistente** — `onboarding.py` e `app/modules/common.py:29-34` (`GeradorResposta.template`) ainda usam `template_sid` + `variaveis` (dict). Após migração Infobip, deveriam ser `template_name` + `placeholders` (lista). Funcionará via fallback `_dict_to_positional_list` em `WhatsAppService`, mas é frágil — se a ordem das chaves do dict não for `'1', '2', ...` previsível, o resultado é errado.
 
-3. **Sem dead-letter queue em envios outbound** — **retry transient implementado** (`app/core/retry.py`: 2 tentativas, backoff exponencial, só em timeout/connection error/5xx). Falhas **persistentes** (auth, 4xx, 5xx prolongado por >5s) ainda perdem a mensagem silenciosamente. Queue/DLQ persistente continua pendente — depende de Azure Service Bus, fora do escopo atual.
+3. ~~**Sem dead-letter queue em envios outbound**~~ — **Resolvido**. Retry transient (`app/core/retry.py`: 2 tentativas, backoff exponencial, só em timeout/connection error/5xx) + persistência das falhas pós-retry na Azure Storage Queue `outbound-dlq` (`app/integrations/dlq.py`). Recuperação manual via endpoints admin `GET /admin/dlq` (lista) e `POST /admin/dlq/retry/{message_id}` (re-executa + delete obrigatório). Política: 1 tentativa manual por mensagem; sem retry automático — evita fila poluída.
 
 4. ~~**Webhook sem autenticação**~~ — **Resolvido**. `POST /bot` agora valida `Basic Auth` via `verify_infobip_basic_auth` (dependência FastAPI). Credenciais em Key Vault (`INFOBIP-WEBHOOK-USER` + `INFOBIP-WEBHOOK-PASSWORD`). Comparação `secrets.compare_digest` (constant-time). Fail-safe: 503 se as credenciais não estiverem configuradas; 401 se inválidas.
 
