@@ -1,3 +1,15 @@
+"""
+Servico de upload de midia recebida do Infobip para o Azure Blob Storage.
+
+Download da midia (HTTP outbound pro Infobip) tem retry transient via
+@transient_retry e, em caso de falha pos-retry, persiste na DLQ
+(Azure Storage Queue) antes de retornar None.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
 import requests
 from azure.storage.blob import BlobServiceClient
 
@@ -5,6 +17,8 @@ from app.core.config import Settings
 from app.core.retry import transient_retry
 from app.core.telemetry import get_logger
 from app.core import log_dimensions as ld
+from app.integrations.dlq import DLQClient
+from app.schemas.dlq import DLQMessage
 
 logger = get_logger(__name__)
 
@@ -41,6 +55,9 @@ class AzureBlobService:
                              ld.COMPONENT: "azure_blob",
                          }})
             self.blob_service_client = None
+
+        # DLQ pra falhas pos-retry no download de midia
+        self._dlq = DLQClient()
 
     @transient_retry
     def _download_midia(self, media_url):
@@ -89,12 +106,16 @@ class AzureBlobService:
                                ld.EXTERNAL_STATUS: status_code,
                                ld.EXTERNAL_SERVICE: "infobip",
                            }})
+            # 4xx geralmente nao adianta retry manual; mas enfileiramos
+            # pra visibilidade humana (URL pode ter sido publica e mudou).
+            self._enqueue_dlq(media_url, container_name, blob_name, exc, attempts=1)
             return None
-        except Exception:
+        except Exception as exc:
             logger.error("erro critico no download da midia", exc_info=True,
                          extra={"custom_dimensions": {
                              ld.OPERATION: "download_media",
                          }})
+            self._enqueue_dlq(media_url, container_name, blob_name, exc, attempts=2)
             return None
 
         # Upload pro Azure Blob
@@ -118,3 +139,20 @@ class AzureBlobService:
                              "container": container_name,
                          }})
             return None
+
+    def _enqueue_dlq(self, media_url, container_name, blob_name, exc, attempts):
+        """Persiste falha de download/upload na DLQ pra investigacao humana."""
+        msg = DLQMessage(
+            operation="download_media",
+            external_service="infobip",
+            payload={
+                "media_url": media_url,
+                "container_name": container_name,
+                "blob_name": blob_name,
+            },
+            sender_hash=None,
+            attempts=attempts,
+            last_error=f"{type(exc).__name__}: {str(exc)[:200]}",
+            errored_at=datetime.now(timezone.utc),
+        )
+        self._dlq.enqueue(msg)
