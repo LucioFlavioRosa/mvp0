@@ -3,6 +3,7 @@
 from app.core.telemetry import configure_telemetry
 configure_telemetry()
 
+import os
 import secrets
 import time
 from fastapi import Depends, FastAPI, BackgroundTasks, HTTPException, Request, Response, status
@@ -32,12 +33,40 @@ logger = get_logger(__name__)
 
 app = FastAPI(title="Bot Aguas do Para", version="1.0.0")
 
+# CORS apertado: le lista de origens permitidas da env var ALLOWED_ORIGINS
+# (comma-separated). Sem env var configurada, lista vazia (= bloqueia todas
+# as origens cross-site, mas backend continua funcionando para requests
+# server-to-server sem header Origin).
+#
+# Origens validas devem ser as URLs HTTPS dos App Services do backoffice:
+#   ALLOWED_ORIGINS="https://backoffice-aegea-prod.azurewebsites.net,https://backoffice-aegea-staging.azurewebsites.net,https://backoffice-aegea-dev.azurewebsites.net"
+#
+# NAO usar wildcard *.azurewebsites.net - qualquer um pode criar
+# subdominio Azure e contornar o CORS.
+_allowed_origins_raw = os.environ.get("ALLOWED_ORIGINS", "").strip()
+if _allowed_origins_raw:
+    _allowed_origins = [o.strip() for o in _allowed_origins_raw.split(",") if o.strip()]
+    logger.info("CORS configurado", extra={"custom_dimensions": {
+        ld.OPERATION: "startup",
+        ld.COMPONENT: "cors",
+        "origins_count": len(_allowed_origins),
+    }})
+else:
+    _allowed_origins = []
+    logger.critical(
+        "ALLOWED_ORIGINS nao configurado - CORS bloqueia TODAS as origens",
+        extra={"custom_dimensions": {
+            ld.OPERATION: "startup",
+            ld.COMPONENT: "cors",
+        }},
+    )
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_allowed_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 app.middleware("http")(correlation_id_middleware)
 

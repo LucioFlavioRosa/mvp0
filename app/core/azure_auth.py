@@ -109,5 +109,18 @@ def get_init_error() -> Optional[str]:
     return _init_error
 
 
-# Inicializa no import do modulo (mesma estrategia do client Infobip em main.py)
-_azure_scheme = _init_scheme()
+# Inicializa no import do modulo. Try/except global para tolerar Key Vault
+# inacessivel (ex: testes locais, sandbox CI sem credentials Azure).
+# Em producao com Managed Identity, _init_scheme() funciona normalmente.
+try:
+    _azure_scheme = _init_scheme()
+except Exception as exc:
+    _azure_scheme = None
+    _init_error = f"falha global no init: {type(exc).__name__}"
+    logger.warning(
+        "Azure AD auth init falhou (ambiente sem Key Vault acessivel?)",
+        extra={"custom_dimensions": {
+            ld.OPERATION: "startup",
+            ld.COMPONENT: "azure_auth",
+        }},
+    )

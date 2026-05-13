@@ -4,11 +4,11 @@
 
 ## Visão geral
 
-A suite hoje tem **93 testes unitários** distribuídos em 11 arquivos. Cobertura global em **~47%**, com cobertura cirúrgica nos caminhos críticos: autenticação (Basic Auth + Azure AD JWT), retry transient, DLQ, dispatch, health checks.
+A suite hoje tem **97 testes unitários** distribuídos em 12 arquivos. Cobertura global em **~48%**, com cobertura cirúrgica nos caminhos críticos: autenticação (Basic Auth + Azure AD JWT), CORS, retry transient, DLQ, dispatch, health checks.
 
 | Métrica | Valor |
 |---|---|
-| Total de testes | 93 |
+| Total de testes | 97 |
 | Tempo de execução (suite completa) | ~1s |
 | Não-flaky em 3+ rodadas consecutivas | OK |
 | Sem dependência externa (rede, disco, DB real) | OK |
@@ -136,6 +136,14 @@ Cobre: `enqueue` happy + 2 cenários fail-safe (queue offline / `send_message` l
 Cobre: sessão nova (`START`), sessão ativa (step + dados), timeout 5 min (`START` + `step_backup`), passos terminais (sem `step_backup`), `_save_session` skipa `START`/`NO_UPDATE` e grava demais, oferta pendente intercepta fluxo de cadastro, saudação no meio do fluxo grava `step_backup`.
 
 > **Detalhe técnico**: usa `BotEngine.__new__` + injeção de atributos. Razão: `__init__` é pesado (instancia 7 módulos de etapa, alguns com Google Maps client no construtor).
+
+### `tests/unit/test_cors.py` (4 testes)
+
+CORS configurado via env var `ALLOWED_ORIGINS`.
+
+Cobre: origin listado recebe `Access-Control-Allow-Origin` no preflight; origin não listado não recebe; env var ausente bloqueia tudo (fail-safe); múltiplas origens comma-separated funcionam.
+
+> **Detalhe técnico**: faz `importlib.reload(main)` em cada teste após `monkeypatch.setenv("ALLOWED_ORIGINS", ...)`, pois o env var é lido no escopo do módulo.
 
 ### `tests/unit/test_dispatch_auth.py` (5 testes)
 

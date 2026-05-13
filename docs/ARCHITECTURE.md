@@ -233,7 +233,7 @@ Itens que valeria endereçar (ordem de impacto):
 
 5. **Mock de validação de CNPJ em produção** — inline em `etapa_pessoal.processar_cnpj` (regra fake "termina em 0000 é inválido"). Trocar por integração real (Serpro/Receita Federal) antes de prod. ViaCEP e Google Maps já são chamadas reais em `etapa_endereco.py`.
 
-6. **CORS aberto** — `allow_origins=["*"]` em `main.py:22-28`. Apertar antes do go-live.
+6. ~~**CORS aberto**~~ — **Resolvido**. CORS configurado via env var `ALLOWED_ORIGINS` (comma-separated). Sem env var = lista vazia (fail-safe). Methods restritos a `GET`/`POST`/`OPTIONS`, headers restritos a `Authorization`/`Content-Type`. Setup em `DEPLOYMENT.md` passo 5. NÃO usar wildcard `*.azurewebsites.net` (qualquer um cria subdomínio Azure).
 
 7. ~~**Logs via `print` + `traceback.print_exc()`**~~ — **Resolvido** pelo PR `chore/structured-logging`. Hoje: `logger` estruturado por módulo + custom dimensions canônicas + PII masking + correlation_id middleware. Ver seção "Decisões-chave" e [`modules/core.md → Telemetria`](modules/core.md).
 
