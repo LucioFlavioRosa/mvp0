@@ -99,7 +99,7 @@ Variáveis de ambiente são lidas diretamente; segredos vivem no Azure Key Vault
 | `GET` | `/` | Liveness probe — responde 200 enquanto o processo está vivo (não checa dependências) |
 | `GET` | `/health/ready` | Readiness probe — checa SQL/Infobip/Storage/Key Vault. Retorna 200 se tudo OK, 503 se qualquer falhar. Sem auth |
 | `POST` | `/bot` | Webhook inbound do Infobip — recebe mensagens do WhatsApp (Basic Auth `INFOBIP-WEBHOOK-USER`/`PASSWORD`) |
-| `POST` | `/api/dispatch` | Backoffice notifica parceiros sobre novo pedido |
+| `POST` | `/api/dispatch` | Backoffice notifica parceiros sobre novo pedido (Bearer JWT Azure AD, scope `dispatch.write`) |
 | `GET` | `/admin/dlq` | Lista (peek) mensagens pendentes na DLQ (Basic Auth `ADMIN-USER`/`PASSWORD`) |
 | `POST` | `/admin/dlq/retry/{message_id}` | Re-executa uma mensagem da DLQ e deleta (1 tentativa por mensagem) |
 
@@ -160,6 +160,7 @@ Detalhes (inventário, padrões de mocking, troubleshooting): [docs/TESTING.md](
 - [Arquitetura de infraestrutura](docs/Infraestrutura.md) — Azure, segurança, LGPD
 - [Deploy](docs/DEPLOYMENT.md) — runbook operacional Azure
 - [Testes](docs/TESTING.md) — suite de testes, fixtures, troubleshooting
+- [Auth Azure AD](docs/AUTH-AZURE-AD.md) — setup completo da autenticação `/api/dispatch` (backoffice + DevOps)
 - [Documentação por módulo](docs/modules/) — referência detalhada de cada pasta
 
 ## Contribuindo
