@@ -6,6 +6,12 @@ Convencoes:
 
 Ordem de aplicacao das fixtures:
     env_vars (autouse) -> mock_settings -> mock_db / mock_infobip / mock_dlq -> client
+
+Requisitos do ambiente:
+- ODBC driver disponivel no sistema (libodbc.so.2) - pyodbc precisa pra
+  importar mesmo que nunca abra conexao. Em GitHub Actions, instalar com
+  `apt-get install -y unixodbc` (ja configurado em .github/workflows/tests.yml).
+  Em dev local com pyodbc instalado via wheel, normalmente ja vem com a lib.
 """
 
 from __future__ import annotations
@@ -26,7 +32,7 @@ def env_vars(monkeypatch):
     Aplicado automaticamente em todos os testes (autouse=True).
     """
     monkeypatch.setenv("AZURE_KEYVAULT_URL", "https://kv-test.vault.azure.net")
-    monkeypatch.setenv("LOG_LEVEL", "WARNING")  # silencia logs em testes
+    monkeypatch.setenv("LOG_LEVEL", "WARNING")
     monkeypatch.setenv("LOG_PII_SALT", "test-salt-fixed")
     monkeypatch.delenv("APPLICATIONINSIGHTS_CONNECTION_STRING", raising=False)
     yield
@@ -40,13 +46,12 @@ class FakeSettings:
 
     Uso em teste:
         def test_X(mock_settings):
-            mock_settings.set("ADMIN-USER", "custom")  # sobrescreve
-            mock_settings.set("ADMIN-PASSWORD", None)  # remove (simula secret ausente)
+            mock_settings.set("ADMIN-USER", "custom")
+            mock_settings.set("ADMIN-PASSWORD", None)  # remove
     """
 
     def __init__(self) -> None:
         self._secrets: dict[str, str] = {
-            # defaults plausiveis - testes especificos sobrescrevem com .set()
             "INFOBIP-API-KEY": "fake-infobip-key",
             "INFOBIP-BASE-URL": "https://fake.api.infobip.com",
             "INFOBIP-SENDER": "5511999998888",
@@ -72,7 +77,6 @@ class FakeSettings:
         return {n: self._secrets[n] for n in names if n in self._secrets}
 
     def set(self, name: str, value: str | None) -> None:
-        """Helper pra teste sobrescrever um secret."""
         if value is None:
             self._secrets.pop(name, None)
         else:
@@ -81,13 +85,7 @@ class FakeSettings:
 
 @pytest.fixture
 def mock_settings(mocker) -> FakeSettings:
-    """Settings mockado retornando dict in-memory.
-
-    NOTA: Patcha Settings ANTES de qualquer import de modulo do projeto que
-    instancia Settings() no escopo do modulo. Por isso fixtures dependentes
-    de mock_settings devem importar o modulo DENTRO do corpo do teste, nao
-    no topo do arquivo.
-    """
+    """Settings mockado retornando dict in-memory."""
     fake = FakeSettings()
     mocker.patch("app.core.config.Settings", return_value=fake)
     return fake
@@ -100,14 +98,14 @@ def mock_settings(mocker) -> FakeSettings:
 def mock_db(mocker):
     """DatabaseManager mockado.
 
-    Por default:
-    - execute_read_one retorna None (sem linha)
-    - execute_write retorna True (sucesso)
+    Defaults:
+    - execute_read_one retorna None
+    - execute_write retorna True
     - execute_transaction retorna True
 
     Override em teste especifico:
-        mock_db.execute_read_one.return_value = ("uuid-fake", "Nome Fake")
-        mock_db.execute_read_one.side_effect = [linha1, linha2, None]  # multiplas
+        mock_db.execute_read_one.return_value = ("uuid", "Nome")
+        mock_db.execute_read_one.side_effect = [linha1, linha2, None]
     """
     db = MagicMock(name="DatabaseManager")
     db.execute_read_one.return_value = None
@@ -124,7 +122,6 @@ def mock_db(mocker):
 def mock_infobip(mocker):
     """InfobipClient mockado.
 
-    send_text / send_image / send_template retornam dict de sucesso fake.
     Para simular falha:
         import requests
         mock_infobip.send_text.side_effect = requests.HTTPError("503")
@@ -145,7 +142,7 @@ def mock_infobip(mocker):
 def mock_dlq(mocker):
     """DLQClient mockado.
 
-    enqueue retorna True. peek/receive_* retornam vazio por default.
+    enqueue=True, peek/receive_*=vazio por default.
     """
     dlq = MagicMock(name="DLQClient")
     dlq.enqueue.return_value = True
@@ -162,10 +159,10 @@ def mock_dlq(mocker):
 # ---------------------------------------------------------------------------
 @pytest.fixture
 def client(mock_settings, mock_db, mock_infobip, mock_dlq):
-    """TestClient com main.app carregado + todos os mocks de Azure aplicados.
+    """TestClient com main.app + mocks aplicados.
 
-    Importa main DENTRO da fixture pra que os patches acima ja estejam
-    ativos no momento que main.py roda seus imports e startup.
+    Importa main DENTRO da fixture pra que os patches acima estejam ativos
+    quando main.py roda seus imports e startup.
     """
     from fastapi.testclient import TestClient
     import importlib
