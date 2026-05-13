@@ -10,6 +10,7 @@ Centraliza quatro recursos transversais que toda a aplicação consome:
 - **DatabaseManager** — wrapper sobre `pyodbc` com retry exponencial para tolerar a latência de cold start do Azure SQL Serverless.
 - **Telemetry** — bootstrap do `azure-monitor-opentelemetry`, factory de logger, mascaramento de PII e middleware de correlation ID.
 - **Log dimensions** — constantes canônicas para custom dimensions no Application Insights (evita typos em queries Kusto).
+- **Retry** — decorator pré-configurado `transient_retry` aplicado em chamadas HTTP externas (Infobip, Blob download, ViaCEP, Google Maps). Política única centralizada: 2 tentativas, backoff exponencial, retry só em transient.
 
 ## Estrutura
 
@@ -19,6 +20,7 @@ Centraliza quatro recursos transversais que toda a aplicação consome:
 | `database.py` | `DatabaseManager` | Conexão e queries no Azure SQL com retry |
 | `telemetry.py` | `configure_telemetry`, `get_logger`, `mask_pii`, `correlation_id_middleware` | Bootstrap App Insights + PII masking + correlation ID |
 | `log_dimensions.py` | (módulo de constantes) | Vocabulário canônico das custom dimensions (`OPERATION`, `SENDER_HASH`, `STEP`, etc.) |
+| `retry.py` | `is_transient_http_error`, `transient_retry` | Decorator de retry para chamadas HTTP externas (Infobip, Blob, ViaCEP, Google Maps): 2 tentativas, backoff exponencial 1-5s, retry só em transient (timeout/connection/5xx). |
 
 ## API pública
 
