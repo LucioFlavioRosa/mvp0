@@ -30,6 +30,7 @@ from slowapi import _rate_limit_exceeded_handler
 
 from app.api import admin_router, dispatch_router, health_router, webhook_router
 from app.bot_engine import BotEngine
+from app.core.azure_auth import configure_azure_auth
 from app.core.config import Settings
 from app.core.rate_limit import limiter, configure_redis_storage
 from app.core.telemetry import correlation_id_middleware, get_logger
@@ -63,6 +64,15 @@ async def lifespan(app: FastAPI):
         configure_redis_storage(redis_conn)
     except Exception:
         logger.error("falha ao configurar Redis no rate limiter", exc_info=True,
+                     extra={"custom_dimensions": {ld.OPERATION: "startup"}})
+
+    # Configura Azure AD JWT scheme via mesmo Settings singleton.
+    # Antes era inicializado no import de azure_auth.py - tirou-se de la
+    # pra evitar I/O Key Vault no boot de cada Gunicorn worker.
+    try:
+        configure_azure_auth(app.state.settings)
+    except Exception:
+        logger.error("falha ao configurar Azure AD auth", exc_info=True,
                      extra={"custom_dimensions": {ld.OPERATION: "startup"}})
 
     try:

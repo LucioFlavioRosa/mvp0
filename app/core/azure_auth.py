@@ -12,6 +12,15 @@ Setup necessario no Azure AD (uma vez por ambiente):
   com permissao no scope acima + admin consent
 - 2 secrets no Key Vault: AZURE-AD-TENANT-ID, AZURE-AD-API-CLIENT-ID
 
+Inicializacao do scheme:
+- O modulo NAO le secrets no import (evita network I/O em cada boot de
+  Gunicorn worker antes do app inicializar).
+- main.py chama configure_azure_auth(settings) no startup do lifespan,
+  usando o Settings ja populado em app.state.settings (mesma instancia
+  singleton, sem dupla chamada Key Vault).
+- Endpoints que dependem do scheme leem dinamicamente via get_azure_scheme()
+  - se chamado antes do configure, retorna None e o endpoint cai em 503.
+
 Detalhes em docs/AUTH-AZURE-AD.md.
 """
 
@@ -21,26 +30,32 @@ from typing import Optional
 
 from fastapi_azure_auth import SingleTenantAzureAuthorizationCodeBearer
 
-from app.core.config import Settings
 from app.core.telemetry import get_logger
 from app.core import log_dimensions as ld
 
 logger = get_logger(__name__)
 
 
-# Singleton - inicializado uma vez no startup
+# Estado global do scheme. Populado por configure_azure_auth() no lifespan startup.
 _azure_scheme: Optional[SingleTenantAzureAuthorizationCodeBearer] = None
 _init_error: Optional[str] = None
 
 
-def _init_scheme() -> Optional[SingleTenantAzureAuthorizationCodeBearer]:
-    """Carrega config do Key Vault e cria o validador JWT.
+def configure_azure_auth(settings) -> bool:
+    """Inicializa o scheme JWT do Azure AD usando secrets do Settings.
 
-    Retorna None se algum dos 2 secrets estiver ausente (fail-safe -
-    endpoint que usa azure_scheme vai falhar com 503 documentado).
+    Chamado uma vez no lifespan startup do main.py. Apos sucesso,
+    get_azure_scheme() retorna o scheme; antes disso retorna None.
+
+    Args:
+        settings: instancia Settings (do app.state.settings).
+
+    Returns:
+        True se scheme foi configurado, False se algum secret ausente ou
+        erro. Em ambos os casos o estado fica em _init_error para o
+        endpoint retornar 503 com detalhe util.
     """
-    global _init_error
-    settings = Settings()
+    global _azure_scheme, _init_error
 
     tenant_id = settings.get_secret("AZURE-AD-TENANT-ID")
     api_client_id = settings.get_secret("AZURE-AD-API-CLIENT-ID")
@@ -52,6 +67,7 @@ def _init_scheme() -> Optional[SingleTenantAzureAuthorizationCodeBearer]:
 
     if missing:
         _init_error = f"secrets ausentes: {missing}"
+        _azure_scheme = None
         logger.warning(
             "Azure AD auth nao inicializado",
             extra={"custom_dimensions": {
@@ -60,20 +76,21 @@ def _init_scheme() -> Optional[SingleTenantAzureAuthorizationCodeBearer]:
                 ld.MISSING_SECRETS: missing,
             }},
         )
-        return None
+        return False
 
     try:
-        scheme = SingleTenantAzureAuthorizationCodeBearer(
+        _azure_scheme = SingleTenantAzureAuthorizationCodeBearer(
             app_client_id=api_client_id,
             tenant_id=tenant_id,
             scopes={
                 f"api://{api_client_id}/dispatch.write": "Disparar oferta de servico a parceiros",
             },
-            # Operadores logam via MSAL no backoffice e enviam tokens delegados
-            # para nossa API. allow_guest_users=False por default (apenas membros
-            # do tenant Aegea podem chamar - convidados externos sao bloqueados).
+            # Operadores logam via MSAL no backoffice e enviam tokens delegados.
+            # allow_guest_users=False: apenas membros do tenant Aegea (convidados
+            # externos sao bloqueados).
             allow_guest_users=False,
         )
+        _init_error = None
         logger.info(
             "Azure AD auth inicializado",
             extra={"custom_dimensions": {
@@ -82,8 +99,9 @@ def _init_scheme() -> Optional[SingleTenantAzureAuthorizationCodeBearer]:
                 "tenant_id_suffix": tenant_id[-4:] if tenant_id else "",
             }},
         )
-        return scheme
+        return True
     except Exception as exc:
+        _azure_scheme = None
         _init_error = f"erro inicializando scheme: {type(exc).__name__}"
         logger.error(
             "erro ao inicializar Azure AD auth",
@@ -93,13 +111,15 @@ def _init_scheme() -> Optional[SingleTenantAzureAuthorizationCodeBearer]:
                 ld.COMPONENT: "azure_auth",
             }},
         )
-        return None
+        return False
 
 
 def get_azure_scheme() -> Optional[SingleTenantAzureAuthorizationCodeBearer]:
-    """Acessor publico do scheme. Usar como `Depends(get_azure_scheme())` nao funciona
-    diretamente porque o resultado da chamada nao eh callable. Em main.py expor
-    diretamente `azure_scheme` no escopo do modulo.
+    """Retorna o scheme JWT atualmente configurado ou None.
+
+    Endpoints devem chamar este getter dinamicamente em cada request (e
+    NAO cachear no escopo do modulo) para que a configuracao via lifespan
+    seja vista assim que disponivel.
     """
     return _azure_scheme
 
@@ -107,20 +127,3 @@ def get_azure_scheme() -> Optional[SingleTenantAzureAuthorizationCodeBearer]:
 def get_init_error() -> Optional[str]:
     """Mensagem de erro do startup, util pro endpoint retornar 503 com detalhe."""
     return _init_error
-
-
-# Inicializa no import do modulo. Try/except global para tolerar Key Vault
-# inacessivel (ex: testes locais, sandbox CI sem credentials Azure).
-# Em producao com Managed Identity, _init_scheme() funciona normalmente.
-try:
-    _azure_scheme = _init_scheme()
-except Exception as exc:
-    _azure_scheme = None
-    _init_error = f"falha global no init: {type(exc).__name__}"
-    logger.warning(
-        "Azure AD auth init falhou (ambiente sem Key Vault acessivel?)",
-        extra={"custom_dimensions": {
-            ld.OPERATION: "startup",
-            ld.COMPONENT: "azure_auth",
-        }},
-    )

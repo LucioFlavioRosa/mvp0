@@ -154,19 +154,20 @@ def verify_admin_basic_auth(
 # ---------------------------------------------------------------------------
 # Auth: /api/dispatch via Azure AD JWT (Bearer)
 # ---------------------------------------------------------------------------
-# Scheme pode ser None se AZURE-AD-TENANT-ID ou AZURE-AD-API-CLIENT-ID
-# estiverem ausentes no Key Vault. Nesse caso fail-safe: 503 + log critical.
-_azure_scheme_instance = get_azure_scheme()
-
-
+# Scheme eh inicializado pelo configure_azure_auth() no lifespan startup
+# do main.py. NAO cacheamos em variavel local aqui - lemos via
+# get_azure_scheme() em cada request, pra que o scheme configurado depois
+# do load do modulo seja visto imediatamente.
 async def verify_dispatch_auth(request: Request):
     """Wrapper fail-safe do Azure AD scheme.
 
-    - Se scheme nao inicializado (secrets ausentes): 503 + log critical
+    - Se scheme nao inicializado (secrets ausentes ou configure ainda
+      nao rodou): 503 + log critical
     - Se token ausente/invalido/expirado: 401 (fastapi-azure-auth levanta)
     - Se OK: retorna User com claims validados (oid, email, name, scp)
     """
-    if _azure_scheme_instance is None:
+    scheme = get_azure_scheme()
+    if scheme is None:
         err = get_init_error() or "Azure AD scheme nao inicializado"
         logger.critical(
             "dispatch auth nao configurada",
@@ -179,7 +180,7 @@ async def verify_dispatch_auth(request: Request):
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="dispatch auth not configured",
         )
-    return await _azure_scheme_instance(request)
+    return await scheme(request)
 
 
 # ---------------------------------------------------------------------------
@@ -324,4 +325,5 @@ def get_sequence_queue(request: Request):
 
 
 def get_sender_number(request: Request) -> str:
+    """Retorna o numero E.164 do remetente Infobip configurado, ou ''."""
     return getattr(request.app.state, "sender_number", "")

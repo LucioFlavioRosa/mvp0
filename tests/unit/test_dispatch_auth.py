@@ -63,10 +63,15 @@ def mock_dispatch_service():
 # ---------------------------------------------------------------------------
 def test_dispatch_returns_503_when_azure_scheme_not_initialized(client, mocker):
     """Se AZURE-AD-TENANT-ID ou AZURE-AD-API-CLIENT-ID ausentes, scheme=None,
-    qualquer chamada retorna 503 + log critical."""
-    from app.api import deps
-    mocker.patch.object(deps, "_azure_scheme_instance", None)
-    mocker.patch.object(deps, "get_init_error", return_value="secrets ausentes")
+    qualquer chamada retorna 503 + log critical.
+
+    O scheme vive em app.core.azure_auth._azure_scheme. verify_dispatch_auth
+    le dinamicamente via get_azure_scheme() em cada request, entao patchar
+    a fonte aqui basta.
+    """
+    from app.core import azure_auth
+    mocker.patch.object(azure_auth, "_azure_scheme", None)
+    mocker.patch.object(azure_auth, "_init_error", "secrets ausentes")
 
     response = client.post(
         "/api/dispatch",
