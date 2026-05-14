@@ -40,7 +40,8 @@ class DatabaseManager:
                 conn = self._get_connection()
                 cursor = conn.cursor()
                 result = operation_func(cursor, query, params)
-                if operation_func.__name__ == '_write_op':
+                # Qualquer op de write (_write_op, _write_rowcount_op, ...) precisa commit
+                if operation_func.__name__.startswith('_write'):
                     conn.commit()
                 return result
 
@@ -94,12 +95,33 @@ class DatabaseManager:
         cursor.execute(query, params or ())
         return True
 
+    def _write_rowcount_op(self, cursor, query, params):
+        """Variante do _write_op que retorna cursor.rowcount em vez de True.
+
+        Necessario para optimistic locking: o caller precisa saber se a UPDATE
+        afetou 1 linha (sucesso) ou 0 linhas (conflito de versao detectado).
+        """
+        cursor.execute(query, params or ())
+        # pyodbc retorna -1 quando rowcount nao esta disponivel; nesse caso
+        # tratamos como sucesso (best-effort).
+        rc = cursor.rowcount
+        return rc if rc is not None else -1
+
     def execute_read_one(self, query, params=None):
         return self._execute_with_retry(self._read_one_op, query, params)
 
     def execute_write(self, query, params=None):
         result = self._execute_with_retry(self._write_op, query, params)
         return result is True
+
+    def execute_write_with_rowcount(self, query, params=None):
+        """Executa write e retorna rowcount (rows affected).
+
+        Returns:
+            int: numero de linhas afetadas (>=0), ou -1 se driver nao
+                 reporta rowcount, ou None em caso de erro fatal apos retries.
+        """
+        return self._execute_with_retry(self._write_rowcount_op, query, params)
 
     def execute_transaction(self, queries_with_params):
         conn = None

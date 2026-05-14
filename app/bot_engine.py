@@ -64,39 +64,92 @@ class BotEngine:
         self.SAUDACOES = ['OI', 'OLA', 'EAI', 'BOM DIA', 'BOA TARDE', 'BOA NOITE', 'MENU', 'AJUDA', 'INICIO', 'RECOMECAR']
 
     def _get_session(self, sender_id):
+        """Le sessao do banco.
+
+        Returns:
+            tuple: (step, dados, last_update) onde last_update e o timestamp
+                   raw da linha (datetime ou None se sessao nao existe). Usado
+                   pelo _save_session para optimistic locking.
+        """
         clean_id = sender_id.split('_')[0]
-        sql = "SELECT CurrentStep, TempData, DATEDIFF(SECOND, LastUpdate, GETDATE()) FROM CHAT_SESSIONS WHERE WhatsAppID=?"
+        sql = (
+            "SELECT CurrentStep, TempData, "
+            "DATEDIFF(SECOND, LastUpdate, GETDATE()), LastUpdate "
+            "FROM CHAT_SESSIONS WHERE WhatsAppID=?"
+        )
         row = self.db.execute_read_one(sql, (clean_id,))
         if row:
-            step, dados_str, inativo = row
+            step, dados_str, inativo, last_update = row
             dados = json.loads(dados_str) if dados_str else {}
             # Timeout 5 min
             if inativo is not None and inativo > 300:
                 passos_ignorar = ['START', 'DECISAO_CONTINUAR', 'DECISAO_REFAZER', 'FINALIZADO', 'CHECK_DEVICE_RESPOSTA']
                 if step not in passos_ignorar:
                     dados['step_backup'] = step
-                return 'START', dados
-            return step, dados
-        return 'START', {}
+                return 'START', dados, last_update
+            return step, dados, last_update
+        return 'START', {}, None
 
-    def _save_session(self, sender_id, step, dados):
+    def _save_session(self, sender_id, step, dados, last_update=None):
+        """Persiste sessao com optimistic locking.
+
+        A clausula WHEN MATCHED so atualiza se target.LastUpdate continua igual
+        ao valor lido em _get_session (last_update). Se outra request atualizou
+        a mesma sessao nesse meio-tempo, o MERGE nao afeta linhas e detectamos
+        o conflito via rowcount=0.
+
+        WITH (HOLDLOCK) previne a race classica do UPSERT: dois workers que
+        ambos viram "linha nao existe" tentando INSERT simultaneo. HOLDLOCK
+        + MERGE serializa o predicate de existencia.
+
+        Args:
+            sender_id: WhatsAppID do parceiro (pode ter sufixo, removido).
+            step: novo CurrentStep.
+            dados: dict serializavel em JSON (vai para TempData).
+            last_update: timestamp lido em _get_session. None se sessao era
+                         nova (forca via NOT MATCHED -> INSERT).
+
+        Returns:
+            bool: True se 1 linha foi afetada (insert ou update OK);
+                  False se conflito detectado (race condition);
+                  True tambem para steps START/NO_UPDATE (no-op intencional).
+        """
         clean_id = sender_id.split('_')[0]
 
         if step in ['START', 'NO_UPDATE']:
-            return
+            return True
 
         dados_str = json.dumps(dados)
         sql = """
-        MERGE CHAT_SESSIONS AS target
+        MERGE CHAT_SESSIONS WITH (HOLDLOCK) AS target
         USING (SELECT ? AS WhatsAppID) AS source
         ON (target.WhatsAppID = source.WhatsAppID)
-        WHEN MATCHED THEN
+        WHEN MATCHED AND target.LastUpdate = ? THEN
             UPDATE SET CurrentStep = ?, TempData = ?, LastUpdate = GETDATE()
         WHEN NOT MATCHED THEN
             INSERT (WhatsAppID, CurrentStep, TempData, LastUpdate)
             VALUES (?, ?, ?, GETDATE());
         """
-        self.db.execute_write(sql, (clean_id, step, dados_str, clean_id, step, dados_str))
+        rowcount = self.db.execute_write_with_rowcount(
+            sql,
+            (clean_id, last_update, step, dados_str, clean_id, step, dados_str),
+        )
+
+        # rowcount == 0 + last_update nao nulo => conflito real (alguem ja
+        # avancou a sessao). last_update nulo + rowcount 0 = sessao existia
+        # e nosso INSERT nao rolou (outro worker criou). Mesma classe.
+        # rowcount == -1 = driver nao reporta; tratamos como sucesso pessimista.
+        # rowcount == None = erro fatal apos retries; ja logado em database.py.
+        if rowcount == 0:
+            logger.warning("save_session conflito detectado (race condition)",
+                           extra={"custom_dimensions": {
+                               ld.OPERATION: "save_session",
+                               ld.SENDER_HASH: mask_pii(clean_id),
+                               ld.STEP: step,
+                               "last_update_seen": str(last_update) if last_update else None,
+                           }})
+            return False
+        return True
 
     def processar_mensagem(self, sender_id, mensagem_texto, media_url=None):
         try:
@@ -114,7 +167,7 @@ class BotEngine:
                 step_dummy, resposta = self.oferta.processar_resposta(mensagem_texto, dados_oferta, clean_id)
                 return resposta
 
-            step_atual, dados = self._get_session(clean_id)
+            step_atual, dados, last_update = self._get_session(clean_id)
             novo_step = step_atual
             resposta = {}
 
@@ -131,7 +184,7 @@ class BotEngine:
                 if step_atual != 'DECISAO_CONTINUAR':
                     dados['step_backup'] = step_atual
                 novo_step, resposta = self.onboarding.processar_inicio(clean_id)
-                self._save_session(clean_id, novo_step, dados)
+                self._save_session(clean_id, novo_step, dados, last_update)
                 return resposta
 
             # 2. ROTEAMENTO
@@ -297,7 +350,7 @@ class BotEngine:
 
             # 3. SALVA SESSAO
             if novo_step != step_atual or step_atual == 'START':
-                self._save_session(clean_id, novo_step, dados)
+                self._save_session(clean_id, novo_step, dados, last_update)
 
             return resposta
 
