@@ -140,13 +140,18 @@ def test_peek_clampa_max_messages_entre_1_e_32(dlq_client, queue_mock):
 # ---------------------------------------------------------------------------
 def test_receive_by_id_retorna_none_se_nao_encontrar(dlq_client, queue_mock):
     """Se nenhuma msg na fila tem o ID, retorna None - endpoint admin
-    devolve 404 baseado nisso."""
+    devolve 404 baseado nisso.
+
+    Pos fix `fix/dlq-receive-by-id-pagination`: receive_by_id itera
+    `for page in pager: for m in page:` (antes era `.by_page().next()`,
+    so a primeira pagina). O mock precisa simular `by_page()` retornando
+    um iteravel de paginas, onde cada pagina e iteravel de mensagens.
+    """
     fake_msg = MagicMock()
     fake_msg.id = "msg-OUTRO"
 
-    received_msgs_iterator = MagicMock()
-    received_msgs_iterator.by_page.return_value.next.return_value = iter([fake_msg])
-    queue_mock.receive_messages.return_value = received_msgs_iterator
+    # by_page() retorna iter([page1, page2, ...]); cada pagina e uma lista de msgs
+    queue_mock.receive_messages.return_value.by_page.return_value = iter([[fake_msg]])
 
     result = dlq_client.receive_by_id("msg-PROCURADO")
 
@@ -158,7 +163,12 @@ def test_receive_by_id_atualiza_pop_receipt_via_update_message(dlq_client, queue
     timeout (5 min) e captura o pop_receipt NOVO retornado.
 
     Bug que ja vimos: se nao capturar o novo pop_receipt, delete() depois
-    falha com 'pop receipt mismatch'."""
+    falha com 'pop receipt mismatch'.
+
+    Pos fix `fix/dlq-receive-by-id-pagination`: o mock simula `by_page()`
+    retornando um iteravel de paginas (cada pagina iteravel de msgs),
+    em vez de `.by_page().next()` da primeira pagina.
+    """
     fake_msg = MagicMock()
     fake_msg.id = "msg-1"
     fake_msg.pop_receipt = "receipt-velho"
@@ -168,7 +178,7 @@ def test_receive_by_id_atualiza_pop_receipt_via_update_message(dlq_client, queue
     updated_msg = MagicMock()
     updated_msg.pop_receipt = "receipt-NOVO"  # apos update_message
 
-    queue_mock.receive_messages.return_value.by_page.return_value.next.return_value = iter([fake_msg])
+    queue_mock.receive_messages.return_value.by_page.return_value = iter([[fake_msg]])
     queue_mock.update_message.return_value = updated_msg
 
     result = dlq_client.receive_by_id("msg-1")
@@ -177,6 +187,8 @@ def test_receive_by_id_atualiza_pop_receipt_via_update_message(dlq_client, queue
     assert result["id"] == "msg-1"
     # CRITICO: pop_receipt eh o NOVO, nao o velho
     assert result["pop_receipt"] == "receipt-NOVO"
+    # Confirma que update_message foi chamado para estender visibility timeout
+    queue_mock.update_message.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
