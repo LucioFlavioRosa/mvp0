@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Request
 
-from app.api.deps import verify_infobip_basic_auth
+from app.api.deps import (
+    get_bot,
+    get_infobip_client,
+    get_sender_number,
+    get_sequence_queue,
+    verify_infobip_basic_auth,
+)
 from app.core.rate_limit import limiter
 from app.core.telemetry import get_logger, mask_pii
 from app.core import log_dimensions as ld
@@ -18,45 +24,24 @@ router = APIRouter()
 
 @router.post("/bot", dependencies=[Depends(verify_infobip_basic_auth)])
 @limiter.limit("30/minute")
-async def chat_webhook(request: Request, payload: InfobipInboundPayload):
+async def chat_webhook(
+    request: Request,
+    payload: InfobipInboundPayload,
+    bot=Depends(get_bot),
+    client=Depends(get_infobip_client),
+    sender_number: str = Depends(get_sender_number),
+    sequence_queue=Depends(get_sequence_queue),
+):
     """Webhook principal que recebe mensagens do WhatsApp via Infobip.
 
     Sequencias (com delays entre items) vao pra Storage Queue;
     sequence_worker (thread daemon) consome respeitando os delays.
     Mensagens unicas (texto/template/media) sao enviadas direto via cliente.
 
-    Fail-safe: se BotEngine ou InfobipClient nao inicializaram (falha critica
-    de startup), retorna 503. Infobip ve 5xx como falha temporaria e faz
-    retry com backoff - nao perde a mensagem do parceiro.
+    get_bot/get_infobip_client levantam 503 automaticamente se os
+    singletons nao inicializaram (fail-safe). Infobip ve 5xx como
+    falha temporaria e faz retry com backoff.
     """
-    state = request.app.state
-    bot = getattr(state, "bot", None)
-    client = getattr(state, "infobip_client", None)
-    sender_number = getattr(state, "sender_number", "")
-    sequence_queue = getattr(state, "sequence_queue", None)
-
-    # Guard fail-safe: sem bot ou client nao tem como processar.
-    # 503 sinaliza falha temporaria - Infobip faz retry automatico.
-    # Sem este guard, AttributeError seria silenciado pelo except no loop
-    # e retornariamos 200 OK sem processar (mensagem perdida).
-    if bot is None or client is None:
-        missing = []
-        if bot is None:
-            missing.append("bot_engine")
-        if client is None:
-            missing.append("infobip_client")
-        logger.critical(
-            "webhook recebido mas dependencias criticas offline",
-            extra={"custom_dimensions": {
-                ld.OPERATION: "webhook_inbound",
-                ld.MISSING_SECRETS: missing,
-            }},
-        )
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="bot offline",
-        )
-
     for result in payload.results:
         sender_id = result.sender
         message_body = ""
@@ -87,13 +72,11 @@ async def chat_webhook(request: Request, payload: InfobipInboundPayload):
 
         tipo = resposta.get('tipo')
 
-        # Sequencias vao pra Storage Queue (worker dedicado processa).
         if tipo == 'sequencia':
             if sequence_queue is not None:
                 sequence_queue.enqueue(sender_id, resposta.get('mensagens', []))
             continue
 
-        # combo_inicial = texto + template com delay; tambem vai pra queue.
         if tipo == 'combo_inicial':
             combo_sequence = [
                 {

@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
-from app.api.deps import verify_admin_basic_auth, executar_retry_dlq
+from app.api.deps import (
+    executar_retry_dlq,
+    get_dlq,
+    verify_admin_basic_auth,
+)
 from app.core.rate_limit import limiter
 from app.core.telemetry import get_logger
 from app.core import log_dimensions as ld
@@ -14,33 +18,13 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/admin")
 
 
-def _require_dlq(request: Request):
-    """Retorna o DLQClient do app.state ou levanta 503.
-
-    Compartilhado pelos endpoints admin para evitar AttributeError
-    silencioso caso DLQClient nao tenha inicializado no startup.
-    """
-    dlq = getattr(request.app.state, "dlq", None)
-    if dlq is None:
-        logger.critical(
-            "endpoint admin acessado mas DLQClient offline",
-            extra={"custom_dimensions": {ld.OPERATION: "admin_dlq"}},
-        )
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="dlq client offline",
-        )
-    return dlq
-
-
 @router.get("/dlq", dependencies=[Depends(verify_admin_basic_auth)])
 @limiter.limit("20/minute")
-def admin_dlq_list(request: Request, limit: int = 32):
+def admin_dlq_list(request: Request, limit: int = 32, dlq=Depends(get_dlq)):
     """Lista (peek) ate 32 mensagens pendentes na DLQ. Read-only.
 
-    503 se DLQClient nao inicializou no startup (fail-safe).
+    get_dlq levanta 503 se DLQClient nao inicializou no startup.
     """
-    dlq = _require_dlq(request)
     limit = max(1, min(limit, 32))
     messages = dlq.peek(max_messages=limit)
     logger.info("admin listou DLQ", extra={"custom_dimensions": {
@@ -52,16 +36,15 @@ def admin_dlq_list(request: Request, limit: int = 32):
 
 @router.post("/dlq/retry/{message_id}", dependencies=[Depends(verify_admin_basic_auth)])
 @limiter.limit("20/minute")
-def admin_dlq_retry(request: Request, message_id: str):
+def admin_dlq_retry(request: Request, message_id: str, dlq=Depends(get_dlq)):
     """Re-executa UMA mensagem da DLQ por ID e deleta no final.
 
     Politica:
     - 1 unica tentativa manual por mensagem.
     - Delete OBRIGATORIO independente do resultado (sucesso ou falha) -
       evita fila poluida com mensagens fantasmas re-tentando sozinhas.
-    - 503 se DLQClient nao inicializou no startup (fail-safe).
+    - 503 se DLQClient nao inicializou no startup (via get_dlq).
     """
-    dlq = _require_dlq(request)
     received = dlq.receive_by_id(message_id)
     if received is None:
         raise HTTPException(
