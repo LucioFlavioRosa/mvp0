@@ -1,18 +1,4 @@
-"""Fixtures globais para testes unitarios do mvp0.
-
-Convencoes:
-- Tudo aqui eh mockado, nada toca rede/disco/DB real.
-- Para mock granular em teste especifico, usar fixture local (no proprio test_*.py).
-
-Ordem de aplicacao das fixtures:
-    env_vars (autouse) -> mock_settings -> mock_db / mock_infobip / mock_dlq -> client
-
-Requisitos do ambiente:
-- ODBC driver disponivel no sistema (libodbc.so.2) - pyodbc precisa pra
-  importar mesmo que nunca abra conexao. Em GitHub Actions, instalar com
-  `apt-get install -y unixodbc` (ja configurado em .github/workflows/tests.yml).
-  Em dev local com pyodbc instalado via wheel, normalmente ja vem com a lib.
-"""
+"""Fixtures globais para testes unitarios do mvp0."""
 
 from __future__ import annotations
 
@@ -22,15 +8,8 @@ from unittest.mock import MagicMock
 import pytest
 
 
-# ---------------------------------------------------------------------------
-# Ambiente (env vars que main.py / Settings esperam)
-# ---------------------------------------------------------------------------
 @pytest.fixture(autouse=True)
 def env_vars(monkeypatch):
-    """Define env vars minimas para que imports nao explodam.
-
-    Aplicado automaticamente em todos os testes (autouse=True).
-    """
     monkeypatch.setenv("AZURE_KEYVAULT_URL", "https://kv-test.vault.azure.net")
     monkeypatch.setenv("LOG_LEVEL", "WARNING")
     monkeypatch.setenv("LOG_PII_SALT", "test-salt-fixed")
@@ -40,42 +19,26 @@ def env_vars(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def disable_rate_limiter():
-    """Desabilita o rate limiter em TODOS os testes por default.
-
-    Razao: TestClient roda tudo como 127.0.0.1 e nao zera contadores entre
-    testes da mesma suite. Sem isso, testes que fazem >N requests batem em
-    429 e falham (mesmo testes que nao tem nada a ver com rate limit).
-
-    Para testar comportamento de rate limit, ver tests/unit/test_rate_limit.py
-    que tem fixture local para reabilitar. Essa fixture LOCAL eh responsavel
-    por restaurar enabled=False no cleanup (esta autouse so seta False antes).
-    """
     try:
         from app.core.rate_limit import limiter
         limiter.enabled = False
     except Exception:
         pass
     yield
-    # NAO restauramos enabled aqui - fixture enable_rate_limiter local
-    # faz isso no cleanup dela. Restaurar aqui causava bug onde "previous"
-    # capturava True de teste anterior nao limpo, e o autouse seguinte
-    # mantinha True por engano.
 
 
-# ---------------------------------------------------------------------------
-# Settings (mock do Key Vault)
-# ---------------------------------------------------------------------------
+@pytest.fixture(autouse=True)
+def disable_sequence_worker(mocker):
+    try:
+        mocker.patch("app.services.sequence_worker.start_worker", return_value=None)
+        mocker.patch("app.services.sequence_worker.stop_worker", return_value=None)
+    except (ModuleNotFoundError, AttributeError):
+        pass
+
+
 class FakeSettings:
-    """Substituto do Settings real. Aceita get/set arbitrarios.
-
-    Uso em teste:
-        def test_X(mock_settings):
-            mock_settings.set("ADMIN-USER", "custom")
-            mock_settings.set("ADMIN-PASSWORD", None)  # remove
-    """
-
-    def __init__(self) -> None:
-        self._secrets: dict[str, str] = {
+    def __init__(self):
+        self._secrets = {
             "INFOBIP-API-KEY": "fake-infobip-key",
             "INFOBIP-BASE-URL": "https://fake.api.infobip.com",
             "INFOBIP-SENDER": "5511999998888",
@@ -94,13 +57,13 @@ class FakeSettings:
             "VIDEO-URL": "https://fake.blob.core.windows.net/video.mp4",
         }
 
-    def get_secret(self, name: str) -> str | None:
+    def get_secret(self, name):
         return self._secrets.get(name)
 
-    def get_all_secrets(self, names: list[str]) -> dict[str, str]:
+    def get_all_secrets(self, names):
         return {n: self._secrets[n] for n in names if n in self._secrets}
 
-    def set(self, name: str, value: str | None) -> None:
+    def set(self, name, value):
         if value is None:
             self._secrets.pop(name, None)
         else:
@@ -108,31 +71,17 @@ class FakeSettings:
 
 
 @pytest.fixture
-def mock_settings(mocker) -> FakeSettings:
-    """Settings mockado retornando dict in-memory."""
+def mock_settings(mocker):
+    """Patcha Settings via singleton bypass + name patch."""
     fake = FakeSettings()
+    from app.core.config import Settings as _RealSettings
+    mocker.patch.object(_RealSettings, "_instance", fake)
     mocker.patch("app.core.config.Settings", return_value=fake)
     return fake
 
 
-# ---------------------------------------------------------------------------
-# DatabaseManager (mock SQL)
-# ---------------------------------------------------------------------------
 @pytest.fixture
 def mock_db(mocker):
-    """DatabaseManager mockado.
-
-    Defaults:
-    - execute_read_one retorna None
-    - execute_write retorna True
-    - execute_write_with_rowcount retorna 1 (1 linha afetada = sucesso)
-    - execute_transaction retorna True
-
-    Override em teste especifico:
-        mock_db.execute_read_one.return_value = ("uuid", "Nome")
-        mock_db.execute_read_one.side_effect = [linha1, linha2, None]
-        mock_db.execute_write_with_rowcount.return_value = 0  # simular conflito
-    """
     db = MagicMock(name="DatabaseManager")
     db.execute_read_one.return_value = None
     db.execute_write.return_value = True
@@ -142,35 +91,19 @@ def mock_db(mocker):
     return db
 
 
-# ---------------------------------------------------------------------------
-# InfobipClient (mock HTTP outbound do Infobip)
-# ---------------------------------------------------------------------------
 @pytest.fixture
 def mock_infobip(mocker):
-    """InfobipClient mockado.
-
-    Para simular falha:
-        import requests
-        mock_infobip.send_text.side_effect = requests.HTTPError("503")
-    """
     client = MagicMock(name="InfobipClient")
-    _success = {"messages": [{"status": {"groupName": "PENDING"}}]}
-    client.send_text.return_value = _success
-    client.send_image.return_value = _success
-    client.send_template.return_value = _success
+    s = {"messages": [{"status": {"groupName": "PENDING"}}]}
+    client.send_text.return_value = s
+    client.send_image.return_value = s
+    client.send_template.return_value = s
     mocker.patch("app.integrations.infobip.InfobipClient", return_value=client)
     return client
 
 
-# ---------------------------------------------------------------------------
-# DLQ (mock Azure Storage Queue)
-# ---------------------------------------------------------------------------
 @pytest.fixture
 def mock_dlq(mocker):
-    """DLQClient mockado.
-
-    enqueue=True, peek/receive_*=vazio por default.
-    """
     dlq = MagicMock(name="DLQClient")
     dlq.enqueue.return_value = True
     dlq.peek.return_value = []
@@ -182,14 +115,15 @@ def mock_dlq(mocker):
 
 
 @pytest.fixture
-def client(mock_settings, mock_db, mock_infobip, mock_dlq):
-    """TestClient com main.app + mocks aplicados.
-
-    Importa main DENTRO da fixture pra que os patches acima estejam ativos
-    quando main.py roda seus imports e startup.
-    """
+def client(mock_settings, mock_db, mock_infobip, mock_dlq, mocker):
     from fastapi.testclient import TestClient
     import importlib
+    sq_mock = MagicMock(name="sequence_queue_in_main")
+    sq_mock.enqueue.return_value = True
+    mocker.patch(
+        "app.integrations.sequence_queue.SequenceQueueClient",
+        return_value=sq_mock,
+    )
     import main
     importlib.reload(main)
     return TestClient(main.app)
