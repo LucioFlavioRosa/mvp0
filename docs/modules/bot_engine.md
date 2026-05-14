@@ -44,8 +44,8 @@ class BotEngine:
 
 **Métodos privados relevantes:**
 
-- `_get_session(sender_id)` → `(step_atual, dados_dict)`. Aplica **timeout de 5 minutos** — se a última interação foi há mais de 300s, força `step = 'START'` e salva `step_backup` em `dados`.
-- `_save_session(sender_id, step, dados)` — `MERGE` em `CHAT_SESSIONS`. Pula steps transitórios (`START`, `NO_UPDATE`) para não criar registros lixo.
+- `_get_session(sender_id)` → `(step_atual, dados_dict, last_update)`. Aplica **timeout de 5 minutos** — se a última interação foi há mais de 300s, força `step = 'START'` e salva `step_backup` em `dados`. Retorna também o timestamp raw `LastUpdate` da linha — propagado pro `_save_session` para fechar o ciclo optimistic locking.
+- `_save_session(sender_id, step, dados, last_update=None)` — `MERGE WITH (HOLDLOCK)` em `CHAT_SESSIONS` com **optimistic locking**: a cláusula `WHEN MATCHED AND target.LastUpdate = ?` só atualiza se ninguém alterou a linha desde o `_get_session` (detecta conflito via `rowcount=0`). `WITH (HOLDLOCK)` previne a race do UPSERT (dois workers ambos vendo "linha não existe" e tentando INSERT simultâneo). Pula steps transitórios (`START`, `NO_UPDATE`) pra não criar registros lixo.
 
 ## Fluxo
 
@@ -119,6 +119,25 @@ Se o usuário envia "oi"/"olá"/"menu" no meio de um cadastro, o engine **salva 
 
 `_save_session` ignora se `step in ['START', 'NO_UPDATE']`. Sem isso, todo turno geraria um update no banco (mesmo quando nada mudou).
 
+### 6. Optimistic locking contra webhooks concorrentes
+
+Dois webhooks Infobip podem chegar quase simultâneos pro mesmo `WhatsAppID` (mensagens em sequência rápida) — sem locking, ambos lêem o mesmo estado, processam, e o segundo sobrescreve o trabalho do primeiro. O ciclo `_get_session → _save_session` resolve com:
+
+```sql
+MERGE CHAT_SESSIONS WITH (HOLDLOCK) AS target
+USING (SELECT ? AS WhatsAppID) AS source
+ON (target.WhatsAppID = source.WhatsAppID)
+WHEN MATCHED AND target.LastUpdate = ? THEN   -- só atualiza se LastUpdate não mudou
+    UPDATE SET CurrentStep = ?, TempData = ?, LastUpdate = GETDATE()
+WHEN NOT MATCHED THEN                          -- HOLDLOCK serializa o predicate
+    INSERT (WhatsAppID, CurrentStep, TempData, LastUpdate) VALUES (?, ?, ?, GETDATE());
+```
+
+- O segundo webhook detecta conflito (`rowcount=0` em `execute_write_with_rowcount`) e pode logar/abortar.
+- `WITH (HOLDLOCK)` evita a race do UPSERT clássica: dois workers ambos vendo "não existe" e tentando INSERT simultâneo.
+
+Detalhes do pattern em `docs/ARCHITECTURE.md` (decisão "Optimistic locking em CHAT_SESSIONS").
+
 ## O grande `if/elif`
 
 Linhas 212–250 são um switch gigante por `step_atual`. **Não refatorar para FSM declarativa sem necessidade** — a ordem dos elifs codifica precedência (ex: `'DOCUMENTOS'` antes do fallback genérico), e o padrão `step.startswith('AGUARDANDO_X')` mistura match exato com prefixo. Reescrever isso pra FSM-table tem alto risco de bug sutil.
@@ -130,10 +149,11 @@ Se o switch crescer muito, considerar:
 
 ## Erros conhecidos / fragilidades
 
-- **Sem logs estruturados** — `print` por todo lado. Application Insights captura, mas filtragem fica difícil.
-- **`traceback.print_exc()` em produção** — em caso de erro, stack vai pro stdout. Considerar `logging.exception()`.
-- **`processar_inicio` é chamado tanto no caminho de erro quanto no normal** — duplicação de comportamento esperado/inesperado.
-- **Resposta genérica em caso de erro** (`"Ocorreu um erro interno"`) — não diferencia validação vs sistema.
+- ~~**Sem logs estruturados** — `print` por todo lado~~ — **Resolvido**. Módulo usa `get_logger(__name__)` + custom dimensions canônicas (`OPERATION`, `SENDER_HASH` via `mask_pii`, `STEP`, etc), com `correlation_id` propagado pelo middleware. Filtragem no App Insights via Kusto fica direta.
+- ~~**`traceback.print_exc()` em produção**~~ — **Resolvido**. Substituído por `logger.exception(...)` / `logger.error(..., exc_info=True)`.
+- **`processar_inicio` é chamado tanto no caminho de erro quanto no normal** — duplicação de comportamento esperado/inesperado. Refatorar quando for tocar o roteamento.
+- **Resposta genérica em caso de erro** (`"Ocorreu um erro interno"`) — não diferencia validação vs sistema. Trade-off vs UX: a Infobip não tem painel "essa mensagem foi 5xx", o usuário só vê o texto.
+- **Optimistic locking só loga conflito** — em caso de `rowcount=0`, hoje o engine apenas loga e prossegue. Tornar visível em telemetria operacional (count de `optimistic_lock_conflict`) ajuda a entender frequência real do problema.
 
 ## Configurações
 

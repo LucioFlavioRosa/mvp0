@@ -124,6 +124,31 @@ az keyvault secret set --vault-name $KV_NAME \
 
 > Esses valores não são "secretos" no sentido criptográfico — são identificadores públicos. Mas centralizar no Key Vault simplifica config e rotação.
 
+### Passo 7 — Como o backend consome esses secrets
+
+A configuração do scheme JWT acontece **no `lifespan` startup do FastAPI**, não no module-load do `app/core/azure_auth.py`. Fluxo:
+
+1. `main.py` cria `app.state.settings = Settings()` (singleton Key Vault wrapper).
+2. Dentro do `@asynccontextmanager` `lifespan`, antes do `yield`, chama `configure_azure_auth(app.state.settings)`.
+3. `configure_azure_auth` lê `AZURE-AD-TENANT-ID` e `AZURE-AD-API-CLIENT-ID` do mesmo `Settings`, instancia o `SingleTenantAzureAuthorizationCodeBearer` e popula `_azure_scheme` no escopo do módulo.
+4. `app/api/dispatch.py` declara `dependencies=[Depends(verify_dispatch_auth)]`. `verify_dispatch_auth` (em `app/api/deps.py`) chama `get_azure_scheme()` **a cada request** — sem cachear no escopo do módulo do router. Se o scheme ainda for `None` (secrets ausentes ou `configure_azure_auth` falhou), retorna 503 com `detail="dispatch auth not configured"` + log critical com `init_error`.
+
+**Por que esse pattern (lazy-init via lifespan, não module-load):**
+
+- O módulo `app/core/azure_auth.py` é importado por outros caminhos cedo no boot (via `app/api/deps.py` que importa o router). Se a inicialização rodasse no import, faria I/O Key Vault em cada boot de worker Gunicorn — N×4 leituras só pra subir o processo (4 workers × N instâncias).
+- Lazy-init pelo lifespan move tudo pra uma única chamada por processo, depois do `Settings` singleton já estar populado em `app.state`.
+- Se algum secret faltar, o app sobe (continua respondendo aos outros endpoints), e só `/api/dispatch` cai em 503 — isolamento de falha.
+
+**Estado interno do módulo:**
+
+| Símbolo | Significado |
+|---|---|
+| `_azure_scheme` | Instância do `SingleTenantAzureAuthorizationCodeBearer` ou `None` se ainda não configurado |
+| `_init_error` | `str` com motivo da falha (ex: `"secrets ausentes: [...]"`) — usado pelo 503 detail |
+| `configure_azure_auth(settings) -> bool` | Chamado no lifespan startup. Retorna `True` em sucesso, `False` em falha. |
+| `get_azure_scheme()` | Retorna `_azure_scheme` (ou `None`). Lido dinamicamente pelo `verify_dispatch_auth`. |
+| `get_init_error()` | Retorna `_init_error` (ou `None`). |
+
 ## Integração no frontend (time do backoffice)
 
 ### Instalar MSAL.js

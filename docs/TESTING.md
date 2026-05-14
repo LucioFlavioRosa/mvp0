@@ -162,7 +162,24 @@ Cobre: origin listado recebe `Access-Control-Allow-Origin` no preflight; origin 
 
 Cobre: 503 quando scheme não inicializado (`AZURE-AD-*` secrets ausentes); 200 com user mockado (override de dependency) + auditoria do `operator_oid` no log; erro interno mantém oid no log de erro; 422 Pydantic ainda funciona mesmo com token; email do operador é mascarado via `mask_pii` (LGPD).
 
-> **Detalhe técnico**: usa `app.dependency_overrides[verify_dispatch_auth] = override_auth` do FastAPI pra simular JWT validado. Evita mockar a lib `fastapi-azure-auth` inteira.
+> **Detalhe técnico**: usa o padrão idiomático FastAPI **`app.dependency_overrides[get_X]`** (em vez de patchar `app.state`):
+>
+> ```python
+> import main
+> from app.api.deps import get_dispatch_service, verify_dispatch_auth
+>
+> main.app.dependency_overrides[verify_dispatch_auth] = override_auth        # async → fake_user
+> main.app.dependency_overrides[get_dispatch_service] = lambda: mock_service # injeta mock
+> try:
+>     response = client.post("/api/dispatch", json={...}, headers={...})
+>     ...
+> finally:
+>     main.app.dependency_overrides.clear()
+> ```
+>
+> **Por que esse padrão**: evita mockar a lib `fastapi-azure-auth` inteira, evita tocar `app.state` (que persiste entre testes e gera flakiness), e roda exatamente o caminho que produção rodaria — só com a borda de I/O substituída.
+>
+> Para forçar o **503 quando o scheme não foi configurado** (caso `secrets ausentes`), use `mocker.patch.object(app.core.azure_auth, "_azure_scheme", None)` — patcha a fonte real que o `get_azure_scheme()` lê em tempo de request.
 
 ### `tests/unit/test_health_check.py` (17 testes)
 
@@ -262,6 +279,35 @@ service = DispatchService.__new__(DispatchService)
 service.db = MagicMock()
 service.whatsapp = MagicMock()
 service.TEMPLATE_OFERTA = "oferta_servico"
+```
+
+### Singletons em `app.state` — usar `app.dependency_overrides[get_X]`
+
+Quando o teste exercita uma rota que recebe um singleton via `Depends(get_X)` (`get_bot`, `get_dispatch_service`, `get_infobip_client`, `get_dlq`, `get_sequence_queue`, `get_sender_number`), **prefira override de dependência ao patch de `app.state`**:
+
+```python
+from app.api.deps import get_dispatch_service
+
+# Setup
+main.app.dependency_overrides[get_dispatch_service] = lambda: mock_service
+
+try:
+    response = client.post("/api/dispatch", json={...})
+    ...
+finally:
+    main.app.dependency_overrides.clear()   # CRÍTICO: senão vaza pra outros testes
+```
+
+**Por que (não use `mocker.patch.object(main.app.state, "dispatch_service", mock)`):**
+
+- `app.state` é compartilhado entre todos os testes do módulo — patch via `mocker` reverte ao fim do teste, mas em testes que esquecem o `cleanup` o estado vaza.
+- `dependency_overrides` é o mecanismo idiomático do FastAPI; o caminho de injeção fica idêntico ao de produção, exceto por substituir o `get_X` por um lambda que retorna o mock.
+- O padrão fica reproduzível pra qualquer dependência — não precisa lembrar onde cada singleton mora em `app.state`.
+
+**Mesma técnica pra auth schemes** (`verify_infobip_basic_auth`, `verify_admin_basic_auth`, `verify_dispatch_auth`):
+
+```python
+main.app.dependency_overrides[verify_dispatch_auth] = lambda: fake_user
 ```
 
 ### Stub de dependência nativa (`pyodbc`)
