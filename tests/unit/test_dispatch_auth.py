@@ -1,15 +1,16 @@
 """Testes para auth Azure AD do /api/dispatch.
 
-Como mocar fastapi-azure-auth corretamente:
-- A funcao verify_dispatch_auth em main.py eh assincrona; precisamos sobrescrever
-  ela com dependency_overrides do FastAPI antes de chamar o endpoint
-- Para testar 401: nao registramos override -> _azure_scheme_instance eh None ->
-  cai no branch 503 (sem scheme configurado)
-- Para testar 503: forcamos _azure_scheme_instance=None
-- Para testar 200: registramos override que retorna um user fake com claims
+Estrategia de mock:
+- verify_dispatch_auth (app.api.deps) eh sobrescrito via
+  app.dependency_overrides para retornar um user fake com claims.
+- dispatch_service (app.state.dispatch_service) eh sobrescrito via
+  app.dependency_overrides[get_dispatch_service] = lambda: mock.
+  Isso eh o padrao idiomatico FastAPI - desacopla do app.state durante
+  os testes.
+- Para 503: forcamos app.api.deps._azure_scheme_instance=None (patch direto
+  no modulo onde verify_dispatch_auth realmente le).
 
-Skill: aplicada do catalogo "Tipo 1 - Endpoint FastAPI com Basic Auth"
-(adaptado para JWT bearer).
+Skill: aplicada do catalogo "Tipo 1 - Endpoint FastAPI com Bearer Auth".
 """
 
 from __future__ import annotations
@@ -17,6 +18,10 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 import pytest
+
+# Imports diretos das fontes reais (sem dependencia de re-exports em main.py)
+from app.api.deps import get_dispatch_service, verify_dispatch_auth
+from app.api import dispatch as dispatch_module
 
 
 @pytest.fixture
@@ -32,15 +37,33 @@ def fake_user():
     return user
 
 
+@pytest.fixture
+def override_auth(fake_user):
+    """Factory: retorna funcao async que devolve o fake_user, pra usar como
+    override de verify_dispatch_auth via app.dependency_overrides."""
+    async def _override():
+        return fake_user
+    return _override
+
+
+@pytest.fixture
+def mock_dispatch_service():
+    """Mock do DispatchService injetado via app.dependency_overrides[get_dispatch_service].
+
+    Tests podem customizar .enviar_oferta_para_prestadores.return_value ou
+    .side_effect conforme o cenario.
+    """
+    m = MagicMock(name="DispatchService")
+    m.enviar_oferta_para_prestadores.return_value = {"status": "success", "enviados": 1}
+    return m
+
+
 # ---------------------------------------------------------------------------
 # 503 quando scheme nao inicializado (secrets ausentes)
 # ---------------------------------------------------------------------------
 def test_dispatch_returns_503_when_azure_scheme_not_initialized(client, mocker):
     """Se AZURE-AD-TENANT-ID ou AZURE-AD-API-CLIENT-ID ausentes, scheme=None,
     qualquer chamada retorna 503 + log critical."""
-    # Patcha no modulo onde o codigo de verify_dispatch_auth realmente le
-    # (app.api.deps). Os antigos paths via `main` continuam funcionando
-    # para compat, mas a versao real que importa eh esta.
     from app.api import deps
     mocker.patch.object(deps, "_azure_scheme_instance", None)
     mocker.patch.object(deps, "get_init_error", return_value="secrets ausentes")
@@ -58,26 +81,14 @@ def test_dispatch_returns_503_when_azure_scheme_not_initialized(client, mocker):
 # 200 happy path com user mockado
 # ---------------------------------------------------------------------------
 def test_dispatch_returns_200_with_valid_token_and_logs_operator_oid(
-    client, fake_user, mocker,
+    client, override_auth, mock_dispatch_service, mocker,
 ):
     """Quando override retorna user com claims, endpoint executa e loga oid."""
     import main
 
-    # Override da dependency com user fake
-    async def override_auth():
-        return fake_user
+    main.app.dependency_overrides[verify_dispatch_auth] = override_auth
+    main.app.dependency_overrides[get_dispatch_service] = lambda: mock_dispatch_service
 
-    main.app.dependency_overrides[main.verify_dispatch_auth] = override_auth
-
-    # Mock dispatch_service para nao executar logica real
-    mocker.patch.object(
-        main.dispatch_service,
-        "enviar_oferta_para_prestadores",
-        return_value={"status": "success", "enviados": 1},
-    )
-    # Spy no logger pra confirmar auditoria
-    # Route esta em app/api/dispatch.py - patcha o logger DAQUELE modulo
-    from app.api import dispatch as dispatch_module
     mock_logger = mocker.patch.object(dispatch_module, "logger")
 
     try:
@@ -90,7 +101,6 @@ def test_dispatch_returns_200_with_valid_token_and_logs_operator_oid(
         assert response.status_code == 200
         assert response.json() == {"status": "success", "enviados": 1}
 
-        # Confirma que oid do operador foi logado (auditoria LGPD)
         info_calls = mock_logger.info.call_args_list
         dispatch_log = next(c for c in info_calls if "dispatch recebido" in c.args[0])
         dims = dispatch_log.kwargs["extra"]["custom_dimensions"]
@@ -103,22 +113,18 @@ def test_dispatch_returns_200_with_valid_token_and_logs_operator_oid(
 # ---------------------------------------------------------------------------
 # Erro interno no dispatch_service mantem operator_oid no log de erro
 # ---------------------------------------------------------------------------
-def test_dispatch_logs_operator_oid_em_caso_de_erro(client, fake_user, mocker):
+def test_dispatch_logs_operator_oid_em_caso_de_erro(
+    client, override_auth, mock_dispatch_service, mocker,
+):
     """Se dispatch_service levanta, o log de erro deve incluir oid do operador
     para auditoria - sabemos quem disparou mesmo se falhou."""
     import main
 
-    async def override_auth():
-        return fake_user
+    mock_dispatch_service.enviar_oferta_para_prestadores.side_effect = RuntimeError("DB offline")
 
-    main.app.dependency_overrides[main.verify_dispatch_auth] = override_auth
-    mocker.patch.object(
-        main.dispatch_service,
-        "enviar_oferta_para_prestadores",
-        side_effect=RuntimeError("DB offline"),
-    )
-    # Route esta em app/api/dispatch.py - patcha o logger DAQUELE modulo
-    from app.api import dispatch as dispatch_module
+    main.app.dependency_overrides[verify_dispatch_auth] = override_auth
+    main.app.dependency_overrides[get_dispatch_service] = lambda: mock_dispatch_service
+
     mock_logger = mocker.patch.object(dispatch_module, "logger")
 
     try:
@@ -131,7 +137,6 @@ def test_dispatch_logs_operator_oid_em_caso_de_erro(client, fake_user, mocker):
         assert response.status_code == 200  # endpoint nao propaga (ja era)
         assert response.json()["status"] == "error"
 
-        # Confirma que erro foi logado com oid
         error_calls = mock_logger.error.call_args_list
         dispatch_err = next(c for c in error_calls if "erro em dispatch" in c.args[0])
         dims = dispatch_err.kwargs["extra"]["custom_dimensions"]
@@ -144,16 +149,13 @@ def test_dispatch_logs_operator_oid_em_caso_de_erro(client, fake_user, mocker):
 # Body Pydantic invalido ainda eh 422 (auth nao bypassa validacao)
 # ---------------------------------------------------------------------------
 def test_dispatch_returns_422_quando_payload_invalido_mesmo_com_token(
-    client, fake_user,
+    client, override_auth,
 ):
     """Mesmo com token valido, payload sem 'pedido_uuid' eh rejeitado por
     Pydantic antes do endpoint executar."""
     import main
 
-    async def override_auth():
-        return fake_user
-
-    main.app.dependency_overrides[main.verify_dispatch_auth] = override_auth
+    main.app.dependency_overrides[verify_dispatch_auth] = override_auth
 
     try:
         response = client.post(
@@ -172,24 +174,17 @@ def test_dispatch_returns_422_quando_payload_invalido_mesmo_com_token(
 # ---------------------------------------------------------------------------
 # operator_email mascarado (mask_pii) no log
 # ---------------------------------------------------------------------------
-def test_dispatch_email_do_operador_eh_mascarado_no_log(client, fake_user, mocker):
+def test_dispatch_email_do_operador_eh_mascarado_no_log(
+    client, override_auth, mock_dispatch_service, mocker,
+):
     """LGPD: email do operador eh PII, deve passar por mask_pii antes do log.
     O log nao pode conter 'operador@aegea.com.br' em claro."""
     import main
 
-    async def override_auth():
-        return fake_user
+    main.app.dependency_overrides[verify_dispatch_auth] = override_auth
+    main.app.dependency_overrides[get_dispatch_service] = lambda: mock_dispatch_service
 
-    main.app.dependency_overrides[main.verify_dispatch_auth] = override_auth
-    mocker.patch.object(
-        main.dispatch_service,
-        "enviar_oferta_para_prestadores",
-        return_value={"status": "success", "enviados": 1},
-    )
-    # Route esta em app/api/dispatch.py - patcha o logger DAQUELE modulo
-    from app.api import dispatch as dispatch_module
     mock_logger = mocker.patch.object(dispatch_module, "logger")
-
 
     try:
         client.post(
