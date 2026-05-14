@@ -6,7 +6,7 @@ no backoffice (MSAL.js), backoffice envia token delegado nesta chamada.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from app.api.deps import DispatchRequest, verify_dispatch_auth
 from app.core.rate_limit import limiter
@@ -25,6 +25,9 @@ async def dispatch_order(request: Request, data: DispatchRequest, user=Depends(v
 
     Body: {pedido_uuid: str, parceiros: list[str]}. Operador identificado
     pelas claims oid + preferred_username do JWT (mascaradas no log).
+
+    Fail-safe: se DispatchService nao inicializou no startup, retorna 503
+    em vez de AttributeError silenciado.
     """
     operator_oid = user.claims.get("oid", "unknown") if user else "unknown"
     operator_email = user.claims.get("preferred_username") or user.claims.get("email", "unknown")
@@ -37,7 +40,21 @@ async def dispatch_order(request: Request, data: DispatchRequest, user=Depends(v
         ld.SENDER_HASH: mask_pii(operator_email),
     }})
 
-    dispatch_service = request.app.state.dispatch_service
+    dispatch_service = getattr(request.app.state, "dispatch_service", None)
+    if dispatch_service is None:
+        logger.critical(
+            "dispatch recebido mas DispatchService offline",
+            extra={"custom_dimensions": {
+                ld.OPERATION: "dispatch",
+                ld.PEDIDO_ID: data.pedido_uuid,
+                "operator_oid": operator_oid,
+            }},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="dispatch service offline",
+        )
+
     try:
         result = dispatch_service.enviar_oferta_para_prestadores(data.parceiros, data.pedido_uuid)
         return result

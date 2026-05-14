@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from app.api.deps import verify_infobip_basic_auth
 from app.core.rate_limit import limiter
@@ -24,12 +24,38 @@ async def chat_webhook(request: Request, payload: InfobipInboundPayload):
     Sequencias (com delays entre items) vao pra Storage Queue;
     sequence_worker (thread daemon) consome respeitando os delays.
     Mensagens unicas (texto/template/media) sao enviadas direto via cliente.
+
+    Fail-safe: se BotEngine ou InfobipClient nao inicializaram (falha critica
+    de startup), retorna 503. Infobip ve 5xx como falha temporaria e faz
+    retry com backoff - nao perde a mensagem do parceiro.
     """
     state = request.app.state
     bot = getattr(state, "bot", None)
     client = getattr(state, "infobip_client", None)
     sender_number = getattr(state, "sender_number", "")
     sequence_queue = getattr(state, "sequence_queue", None)
+
+    # Guard fail-safe: sem bot ou client nao tem como processar.
+    # 503 sinaliza falha temporaria - Infobip faz retry automatico.
+    # Sem este guard, AttributeError seria silenciado pelo except no loop
+    # e retornariamos 200 OK sem processar (mensagem perdida).
+    if bot is None or client is None:
+        missing = []
+        if bot is None:
+            missing.append("bot_engine")
+        if client is None:
+            missing.append("infobip_client")
+        logger.critical(
+            "webhook recebido mas dependencias criticas offline",
+            extra={"custom_dimensions": {
+                ld.OPERATION: "webhook_inbound",
+                ld.MISSING_SECRETS: missing,
+            }},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="bot offline",
+        )
 
     for result in payload.results:
         sender_id = result.sender
@@ -59,14 +85,6 @@ async def chat_webhook(request: Request, payload: InfobipInboundPayload):
                          }})
             continue
 
-        if not client:
-            logger.warning("cliente Infobip offline - sem resposta",
-                           extra={"custom_dimensions": {
-                               ld.OPERATION: "webhook_inbound",
-                               ld.SENDER_HASH: mask_pii(sender_id),
-                           }})
-            continue
-
         tipo = resposta.get('tipo')
 
         # Sequencias vao pra Storage Queue (worker dedicado processa).
@@ -75,8 +93,7 @@ async def chat_webhook(request: Request, payload: InfobipInboundPayload):
                 sequence_queue.enqueue(sender_id, resposta.get('mensagens', []))
             continue
 
-        # combo_inicial = texto + template com delay; tambem vai pra queue
-        # (antes tinha time.sleep(0.5) bloqueante no request path).
+        # combo_inicial = texto + template com delay; tambem vai pra queue.
         if tipo == 'combo_inicial':
             combo_sequence = [
                 {

@@ -14,13 +14,33 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/admin")
 
 
+def _require_dlq(request: Request):
+    """Retorna o DLQClient do app.state ou levanta 503.
+
+    Compartilhado pelos endpoints admin para evitar AttributeError
+    silencioso caso DLQClient nao tenha inicializado no startup.
+    """
+    dlq = getattr(request.app.state, "dlq", None)
+    if dlq is None:
+        logger.critical(
+            "endpoint admin acessado mas DLQClient offline",
+            extra={"custom_dimensions": {ld.OPERATION: "admin_dlq"}},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="dlq client offline",
+        )
+    return dlq
+
+
 @router.get("/dlq", dependencies=[Depends(verify_admin_basic_auth)])
 @limiter.limit("20/minute")
 def admin_dlq_list(request: Request, limit: int = 32):
-    """Lista (peek) ate 32 mensagens pendentes na DLQ. NAO remove nem altera
-    visibilidade - operacao read-only segura pra inspecao.
+    """Lista (peek) ate 32 mensagens pendentes na DLQ. Read-only.
+
+    503 se DLQClient nao inicializou no startup (fail-safe).
     """
-    dlq = request.app.state.dlq
+    dlq = _require_dlq(request)
     limit = max(1, min(limit, 32))
     messages = dlq.peek(max_messages=limit)
     logger.info("admin listou DLQ", extra={"custom_dimensions": {
@@ -39,8 +59,9 @@ def admin_dlq_retry(request: Request, message_id: str):
     - 1 unica tentativa manual por mensagem.
     - Delete OBRIGATORIO independente do resultado (sucesso ou falha) -
       evita fila poluida com mensagens fantasmas re-tentando sozinhas.
+    - 503 se DLQClient nao inicializou no startup (fail-safe).
     """
-    dlq = request.app.state.dlq
+    dlq = _require_dlq(request)
     received = dlq.receive_by_id(message_id)
     if received is None:
         raise HTTPException(
