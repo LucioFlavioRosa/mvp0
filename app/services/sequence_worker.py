@@ -232,6 +232,7 @@ def start_worker() -> None:
     _worker_thread.start()
 
 
+
 def stop_worker(timeout: float = 5.0) -> None:
     """Sinaliza shutdown e aguarda thread terminar (com timeout).
 

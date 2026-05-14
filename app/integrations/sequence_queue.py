@@ -165,6 +165,7 @@ class SequenceQueueClient:
             return False
 
 
+
 def _safe_parse(content: str) -> dict[str, Any]:
     """Tenta parsear o JSON; em erro, retorna dict com raw."""
     try:

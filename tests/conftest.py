@@ -116,14 +116,17 @@ def mock_dlq(mocker):
 
 @pytest.fixture
 def client(mock_settings, mock_db, mock_infobip, mock_dlq, mocker):
+    """TestClient com main.app + mocks. Patcha SequenceQueueClient antes do reload."""
     from fastapi.testclient import TestClient
     import importlib
+
     sq_mock = MagicMock(name="sequence_queue_in_main")
     sq_mock.enqueue.return_value = True
     mocker.patch(
         "app.integrations.sequence_queue.SequenceQueueClient",
         return_value=sq_mock,
     )
+
     import main
     importlib.reload(main)
     return TestClient(main.app)
