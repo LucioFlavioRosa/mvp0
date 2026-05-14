@@ -41,6 +41,18 @@ WAIT_MIN_SECONDS = 1
 WAIT_MAX_SECONDS = 5
 WAIT_MULTIPLIER = 1
 
+# Import opcional de googlemaps no nivel de modulo. Importar dentro do
+# is_transient_http_error (hot path do tratador de erros) adiciona overhead
+# desnecessario mesmo com sys.modules cache. Aqui o import roda 1 vez no
+# load do modulo; se a lib nao estiver instalada, _HAS_GMAPS=False e os
+# checks de gmaps sao pulados naturalmente.
+try:
+    from googlemaps import exceptions as gmaps_exc
+    _HAS_GMAPS = True
+except ImportError:
+    gmaps_exc = None  # type: ignore[assignment]
+    _HAS_GMAPS = False
+
 
 def is_transient_http_error(exception: BaseException) -> bool:
     """Predicate: retorna True se a exception deve disparar retry.
@@ -57,16 +69,12 @@ def is_transient_http_error(exception: BaseException) -> bool:
         response = exception.response
         return response is not None and response.status_code >= 500
 
-    try:
-        from googlemaps import exceptions as gmaps_exc
-    except ImportError:
-        return False
-
-    if isinstance(exception, (gmaps_exc.Timeout, gmaps_exc.TransportError)):
-        return True
-    if isinstance(exception, gmaps_exc.HTTPError):
-        status = getattr(exception, "status_code", None)
-        return status is not None and status >= 500
+    if _HAS_GMAPS:
+        if isinstance(exception, (gmaps_exc.Timeout, gmaps_exc.TransportError)):
+            return True
+        if isinstance(exception, gmaps_exc.HTTPError):
+            status = getattr(exception, "status_code", None)
+            return status is not None and status >= 500
 
     return False
 
@@ -93,7 +101,6 @@ def _log_retry_attempt(retry_state: Any) -> None:
             ld.OPERATION: "http_retry",
             "function": fn_name,
             "attempt": retry_state.attempt_number,
-            "max_attempts": MAX_ATTEMPTS,
             "sleep_seconds": sleep_s,
             "error_type": error_type,
             ld.EXTERNAL_STATUS: status_code,

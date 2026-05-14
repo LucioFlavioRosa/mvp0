@@ -31,7 +31,7 @@ from slowapi import _rate_limit_exceeded_handler
 from app.api import admin_router, dispatch_router, health_router, webhook_router
 from app.bot_engine import BotEngine
 from app.core.config import Settings
-from app.core.rate_limit import limiter
+from app.core.rate_limit import limiter, configure_redis_storage
 from app.core.telemetry import correlation_id_middleware, get_logger
 from app.core import log_dimensions as ld
 from app.integrations.dlq import DLQClient
@@ -55,6 +55,16 @@ async def lifespan(app: FastAPI):
     stop pro worker.
     """
     # ----- STARTUP -----
+    # Configura Redis como storage do rate limiter usando o Settings ja
+    # populado em app.state. Evita Settings() inline no module load do
+    # rate_limit.py (que rodaria a cada Gunicorn worker boot).
+    try:
+        redis_conn = app.state.settings.get_secret("REDIS-CONNECTION-STRING")
+        configure_redis_storage(redis_conn)
+    except Exception:
+        logger.error("falha ao configurar Redis no rate limiter", exc_info=True,
+                     extra={"custom_dimensions": {ld.OPERATION: "startup"}})
+
     try:
         app.state.sequence_queue = SequenceQueueClient()
         sequence_worker.start_worker()
@@ -177,24 +187,3 @@ app.include_router(health_router)
 app.include_router(webhook_router)
 app.include_router(admin_router)
 app.include_router(dispatch_router)
-
-
-# ==============================================================================
-# 5. RE-EXPORTS PARA COMPAT (testes legados referenciam main.X)
-# ==============================================================================
-# Testes mais antigos fazem:
-#   main.verify_dispatch_auth          (pra dependency_overrides)
-#   main.dispatch_service              (pra assertions)
-# Re-exportamos pra nao quebrar esses testes apos a refatoracao das rotas
-# para app/api/. Codigo novo deve usar app.api.deps e app.state diretamente.
-from app.api import deps as _deps  # noqa: E402
-from app.api.deps import (  # noqa: E402
-    verify_infobip_basic_auth,
-    verify_admin_basic_auth,
-    verify_dispatch_auth,
-)
-bot = app.state.bot
-dispatch_service = app.state.dispatch_service
-client = app.state.infobip_client
-settings = app.state.settings
-_azure_scheme_instance = _deps._azure_scheme_instance
