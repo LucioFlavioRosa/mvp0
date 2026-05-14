@@ -125,15 +125,18 @@ def mock_db(mocker):
     Defaults:
     - execute_read_one retorna None
     - execute_write retorna True
+    - execute_write_with_rowcount retorna 1 (1 linha afetada = sucesso)
     - execute_transaction retorna True
 
     Override em teste especifico:
         mock_db.execute_read_one.return_value = ("uuid", "Nome")
         mock_db.execute_read_one.side_effect = [linha1, linha2, None]
+        mock_db.execute_write_with_rowcount.return_value = 0  # simular conflito
     """
     db = MagicMock(name="DatabaseManager")
     db.execute_read_one.return_value = None
     db.execute_write.return_value = True
+    db.execute_write_with_rowcount.return_value = 1
     db.execute_transaction.return_value = True
     mocker.patch("app.core.database.DatabaseManager", return_value=db)
     return db
