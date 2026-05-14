@@ -151,37 +151,53 @@ class DLQClient:
 
     def receive_by_id(self, message_id: str) -> Optional[dict[str, Any]]:
         """Pega 1 mensagem por ID. Storage Queue nao tem essa primitiva direta;
-        iteramos peek + match. Para volumes baixos (<32 mensagens) eh aceitavel.
+        iteramos paginas (32 msgs cada) com visibility_timeout curto ate achar.
 
-        Limitacao: se a mensagem esta com visibility timeout ativo (alguem
-        pegou ela), peek nao retorna - devolvemos None.
+        Antes pegava SO a primeira pagina (.by_page().next()) - bug silencioso
+        com DLQ > 32 itens: admin retry de msg na pagina 2+ retornava 404
+        falso. Agora itera todas as paginas.
+
+        Custo: O(N/32) chamadas Storage Queue pra fila grande, mas eh acionado
+        so via admin endpoint manual (raro), nao no caminho critico.
+
+        Trade-off: durante a iteracao, todas as mensagens "tocadas" ficam
+        com vis. timeout=5s. Se dois admins fizerem retry simultaneo, o
+        segundo pode pegar paginas vazias - em 5s reaparecem, basta refazer.
+
+        Quando acha o alvo: re-aplica vis. timeout=RECEIVE_VISIBILITY_SECONDS
+        (5min) e devolve com pop_receipt atualizado (caso contrario delete
+        posterior falharia com 'pop receipt mismatch').
         """
         if self.queue is None:
             return None
-        # Recebe ate 32 mensagens (max do Storage Queue) com visibility timeout curto
-        # para minimizar lock indevido de mensagens nao alvo.
-        received = list(self.queue.receive_messages(
-            messages_per_page=32,
-            visibility_timeout=5,  # curto - so pra inspecionar
-        ).by_page().next())
-        match = None
-        for m in received:
-            if m.id == message_id and match is None:
-                # Re-esconde a mensagem alvo com visibility timeout normal.
-                # IMPORTANTE: update_message retorna a mensagem com pop_receipt
-                # atualizado - usar esse, senao o delete posterior falha com
-                # "pop receipt mismatch".
-                updated = self.queue.update_message(
-                    message=m,
-                    visibility_timeout=RECEIVE_VISIBILITY_SECONDS,
-                )
-                match = {
-                    "id": m.id,
-                    "pop_receipt": updated.pop_receipt,
-                    "content": _safe_parse(m.content),
-                    "dequeue_count": m.dequeue_count,
-                }
-        return match
+        try:
+            pager = self.queue.receive_messages(
+                messages_per_page=32,
+                visibility_timeout=5,  # curto - so pra inspecionar
+            ).by_page()
+            for page in pager:
+                for m in page:
+                    if m.id == message_id:
+                        updated = self.queue.update_message(
+                            message=m,
+                            visibility_timeout=RECEIVE_VISIBILITY_SECONDS,
+                        )
+                        return {
+                            "id": m.id,
+                            "pop_receipt": updated.pop_receipt,
+                            "content": _safe_parse(m.content),
+                            "dequeue_count": m.dequeue_count,
+                        }
+        except Exception:
+            logger.error(
+                "falha ao iterar paginas da DLQ buscando message_id",
+                exc_info=True,
+                extra={"custom_dimensions": {
+                    ld.OPERATION: "dlq_receive_by_id",
+                    "message_id": message_id,
+                }},
+            )
+        return None
 
     def delete(self, message_id: str, pop_receipt: str) -> bool:
         """Remove definitivamente da fila. Sempre chamado apos retry manual
