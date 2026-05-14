@@ -6,7 +6,8 @@ configure_telemetry()
 import os
 import secrets
 import time
-from fastapi import Depends, FastAPI, BackgroundTasks, HTTPException, Request, Response, status
+from contextlib import asynccontextmanager
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel
@@ -16,8 +17,10 @@ from app.bot_engine import BotEngine
 from app.services.dispatch_service import DispatchService
 from app.services.whatsapp_service import DEFAULT_TEMPLATE_LANGUAGE
 from app.services.azure_blob_service import AzureBlobService
+from app.services import sequence_worker
 from app.integrations.infobip import InfobipClient
 from app.integrations.dlq import DLQClient
+from app.integrations.sequence_queue import SequenceQueueClient
 from app.schemas.infobip_webhook import InfobipInboundPayload
 from app.core.config import Settings
 from app.core.telemetry import get_logger, mask_pii, correlation_id_middleware
@@ -33,8 +36,51 @@ logger = get_logger(__name__)
 # ==============================================================================
 # 1. INICIALIZACAO
 # ==============================================================================
+#
+# Sequencias de mensagens com delays (ex: texto + video + texto-com-delay-30s
+# da validacao CNPJ) NAO rodam em BackgroundTasks - foram desacopladas pra
+# Azure Storage Queue. O webhook so enqueue (microsegundos) e libera o
+# worker FastAPI; um sequence_worker dedicado (thread daemon) consome a
+# fila respeitando os delays.
+#
+# Lifecycle: o lifespan context manager substitui os @app.on_event
+# deprecated. Roda no startup do processo (cria SequenceQueueClient + sobe
+# sequence_worker daemon) e no shutdown (sinaliza stop).
+_sequence_queue: SequenceQueueClient | None = None
 
-app = FastAPI(title="Bot Aguas do Para", version="1.0.0")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Lifecycle do FastAPI app: startup + shutdown.
+
+    Substitui @app.on_event('startup') / @app.on_event('shutdown') que
+    estao deprecated desde FastAPI 0.93. Roda 1x por processo Gunicorn.
+    """
+    global _sequence_queue
+    # ----- STARTUP -----
+    try:
+        _sequence_queue = SequenceQueueClient()
+        sequence_worker.start_worker()
+        logger.info("sequence_worker iniciado no startup",
+                    extra={"custom_dimensions": {ld.OPERATION: "startup"}})
+    except Exception:
+        logger.error("falha ao iniciar sequence_worker no startup", exc_info=True,
+                     extra={"custom_dimensions": {ld.OPERATION: "startup"}})
+
+    yield  # app esta vivo aqui
+
+    # ----- SHUTDOWN -----
+    try:
+        sequence_worker.stop_worker(timeout=2.0)
+    except Exception:
+        pass
+
+
+app = FastAPI(
+    title="Bot Aguas do Para",
+    version="1.0.0",
+    lifespan=lifespan,
+)
 
 # Rate limit (slowapi com Redis - ver app/core/rate_limit.py)
 # Decorators @limiter.limit("X/min") aplicados nos endpoints abaixo.
@@ -122,42 +168,23 @@ class DispatchRequest(BaseModel):
 
 
 # ==============================================================================
-# 2. BACKGROUND
+# 2. SEQUENCE QUEUE (envio assincrono de sequencias)
 # ==============================================================================
-def enviar_sequencia_background(mensagens, sender_id):
-    """Processa lista de mensagens com delay, sem travar a resposta HTTP."""
-    if not client:
-        logger.warning("background: cliente Infobip offline",
-                       extra={"custom_dimensions": {ld.OPERATION: "send_sequence"}})
-        return
-
-    try:
-        for item in mensagens:
-            time.sleep(item.get('delay', 1.0))
-            tipo = item.get('tipo')
-            if tipo == 'texto':
-                client.send_text(sender=sender_number, to=sender_id, text=item['conteudo'])
-            elif tipo == 'media':
-                client.send_image(
-                    sender=sender_number,
-                    to=sender_id,
-                    media_url=item['url'],
-                    caption=item.get('legenda') or None,
-                )
-            elif tipo == 'template':
-                client.send_template(
-                    sender=sender_number,
-                    to=sender_id,
-                    template_name=item.get('template_name') or item.get('sid'),
-                    language=item.get('language', DEFAULT_TEMPLATE_LANGUAGE),
-                    placeholders=item.get('placeholders') or [],
-                )
-    except Exception:
-        logger.error("falha no envio em background", exc_info=True,
-                     extra={"custom_dimensions": {
-                         ld.OPERATION: "send_sequence",
-                         ld.SENDER_HASH: mask_pii(sender_id),
-                     }})
+# Sequencias de mensagens com delays (ex: texto + video + texto-com-delay-30s
+# da validacao CNPJ) NAO rodam mais em BackgroundTasks. Foram desacopladas
+# pra Azure Storage Queue: o webhook so enqueue (microsegundos) e libera o
+# worker FastAPI imediatamente. Um sequence_worker dedicado (thread daemon
+# inicializada no startup) consome a fila e respeita os delays.
+#
+# Beneficios vs BackgroundTasks anterior:
+# - Webhook nao espera time.sleep longo (30s) que segurava thread do pool
+# - Durabilidade: se o worker cai, mensagem reaparece apos visibility timeout
+# - Isolamento: pool de threads do FastAPI fica livre para outros webhooks
+#
+# Ver app/integrations/sequence_queue.py e app/services/sequence_worker.py.
+# Lifecycle do _sequence_queue + sequence_worker eh gerenciado pelo
+# `lifespan` context manager definido no topo do arquivo (substitui o
+# @app.on_event deprecated).
 
 
 # ==============================================================================
@@ -389,7 +416,7 @@ def health_ready(response: Response):
 
 @app.post("/bot", dependencies=[Depends(verify_infobip_basic_auth)])
 @limiter.limit("30/minute")
-async def chat_webhook(request: Request, payload: InfobipInboundPayload, background_tasks: BackgroundTasks):
+async def chat_webhook(request: Request, payload: InfobipInboundPayload):
     """Webhook principal que recebe mensagens do WhatsApp via Infobip.
 
     Autenticado via Basic Auth (configurado no portal Infobip + Key Vault).
@@ -432,30 +459,37 @@ async def chat_webhook(request: Request, payload: InfobipInboundPayload, backgro
 
         tipo = resposta.get('tipo')
 
+        # Sequencias (com delays entre items) vao pra Storage Queue.
+        # O sequence_worker (thread daemon) consome a queue e respeita os delays.
+        # Webhook nunca espera time.sleep - so enqueue (microsegundos) e libera.
         if tipo == 'sequencia':
-            background_tasks.add_task(
-                enviar_sequencia_background,
-                resposta.get('mensagens', []),
-                sender_id,
-            )
+            if _sequence_queue is not None:
+                _sequence_queue.enqueue(sender_id, resposta.get('mensagens', []))
+            continue
+
+        # combo_inicial tinha time.sleep(0.5) bloqueante no request path.
+        # Convertido para sequencia enfileirada - mesmo benefício.
+        if tipo == 'combo_inicial':
+            combo_sequence = [
+                {
+                    'tipo': 'texto',
+                    'conteudo': resposta['texto'],
+                    'delay': 0,
+                },
+                {
+                    'tipo': 'template',
+                    'template_name': resposta.get('template_name') or resposta.get('template_sid') or resposta.get('sid'),
+                    'language': resposta.get('language', DEFAULT_TEMPLATE_LANGUAGE),
+                    'placeholders': resposta.get('placeholders') or [],
+                    'delay': 0.5,
+                },
+            ]
+            if _sequence_queue is not None:
+                _sequence_queue.enqueue(sender_id, combo_sequence)
             continue
 
         try:
-            if tipo == 'combo_inicial':
-                client.send_text(
-                    sender=sender_number,
-                    to=sender_id,
-                    text=resposta['texto'],
-                )
-                time.sleep(0.5)
-                client.send_template(
-                    sender=sender_number,
-                    to=sender_id,
-                    template_name=resposta.get('template_name') or resposta.get('template_sid') or resposta.get('sid'),
-                    language=resposta.get('language', DEFAULT_TEMPLATE_LANGUAGE),
-                    placeholders=resposta.get('placeholders') or [],
-                )
-            elif tipo == 'template':
+            if tipo == 'template':
                 client.send_template(
                     sender=sender_number,
                     to=sender_id,
