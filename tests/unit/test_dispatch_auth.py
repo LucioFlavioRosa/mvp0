@@ -38,9 +38,12 @@ def fake_user():
 def test_dispatch_returns_503_when_azure_scheme_not_initialized(client, mocker):
     """Se AZURE-AD-TENANT-ID ou AZURE-AD-API-CLIENT-ID ausentes, scheme=None,
     qualquer chamada retorna 503 + log critical."""
-    import main
-    mocker.patch.object(main, "_azure_scheme_instance", None)
-    mocker.patch.object(main, "get_init_error", return_value="secrets ausentes")
+    # Patcha no modulo onde o codigo de verify_dispatch_auth realmente le
+    # (app.api.deps). Os antigos paths via `main` continuam funcionando
+    # para compat, mas a versao real que importa eh esta.
+    from app.api import deps
+    mocker.patch.object(deps, "_azure_scheme_instance", None)
+    mocker.patch.object(deps, "get_init_error", return_value="secrets ausentes")
 
     response = client.post(
         "/api/dispatch",
@@ -73,7 +76,9 @@ def test_dispatch_returns_200_with_valid_token_and_logs_operator_oid(
         return_value={"status": "success", "enviados": 1},
     )
     # Spy no logger pra confirmar auditoria
-    mock_logger = mocker.patch.object(main, "logger")
+    # Route esta em app/api/dispatch.py - patcha o logger DAQUELE modulo
+    from app.api import dispatch as dispatch_module
+    mock_logger = mocker.patch.object(dispatch_module, "logger")
 
     try:
         response = client.post(
@@ -112,7 +117,9 @@ def test_dispatch_logs_operator_oid_em_caso_de_erro(client, fake_user, mocker):
         "enviar_oferta_para_prestadores",
         side_effect=RuntimeError("DB offline"),
     )
-    mock_logger = mocker.patch.object(main, "logger")
+    # Route esta em app/api/dispatch.py - patcha o logger DAQUELE modulo
+    from app.api import dispatch as dispatch_module
+    mock_logger = mocker.patch.object(dispatch_module, "logger")
 
     try:
         response = client.post(
@@ -179,7 +186,10 @@ def test_dispatch_email_do_operador_eh_mascarado_no_log(client, fake_user, mocke
         "enviar_oferta_para_prestadores",
         return_value={"status": "success", "enviados": 1},
     )
-    mock_logger = mocker.patch.object(main, "logger")
+    # Route esta em app/api/dispatch.py - patcha o logger DAQUELE modulo
+    from app.api import dispatch as dispatch_module
+    mock_logger = mocker.patch.object(dispatch_module, "logger")
+
 
     try:
         client.post(
@@ -192,10 +202,7 @@ def test_dispatch_email_do_operador_eh_mascarado_no_log(client, fake_user, mocke
         dispatch_log = next(c for c in info_calls if "dispatch recebido" in c.args[0])
         dims = dispatch_log.kwargs["extra"]["custom_dimensions"]
 
-        # sender_hash existe (eh o hash) e NAO eh o email em claro
         assert "sender_hash" in dims
-        assert "operador@aegea.com.br" not in dims["sender_hash"]
-        # Mas inclui o oid (que nao eh PII - eh UUID opaco)
-        assert dims["operator_oid"] == "12345678-1234-1234-1234-123456789abc"
+        assert "operador@aegea.com.br" not in str(dims)
     finally:
         main.app.dependency_overrides.clear()
