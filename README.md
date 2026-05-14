@@ -161,6 +161,7 @@ Detalhes (inventário, padrões de mocking, troubleshooting): [docs/TESTING.md](
 - [Deploy](docs/DEPLOYMENT.md) — runbook operacional Azure
 - [Testes](docs/TESTING.md) — suite de testes, fixtures, troubleshooting
 - [Auth Azure AD](docs/AUTH-AZURE-AD.md) — setup completo da autenticação `/api/dispatch` (backoffice + DevOps)
+- [Monitoramento](docs/MONITORING.md) — alertas Azure Monitor + Action Groups + queries Kusto + runbook de incidente
 - [Documentação por módulo](docs/modules/) — referência detalhada de cada pasta
 
 ## Contribuindo

@@ -206,6 +206,18 @@ Azure Cache for Redis Basic C0 centraliza o contador. Limite configurado = limit
 
 Connection string no Key Vault como `REDIS-CONNECTION-STRING`. Parse de formato Azure (`host:port,password=X,ssl=True`) para URI slowapi (`rediss://:X@host:port/0`) em `app/core/rate_limit.py`.
 
+### Alertas operacionais via Azure Monitor
+
+11 alert rules configuradas no Application Insights, agrupadas por severidade:
+
+- **Sev 1** (incidente em horário comercial): `/health/ready` 503, `/bot` retornando 5xx, DLQ crescendo rápido, brute force em `/admin/*`, vazamento de PII em logs.
+- **Sev 2** (atenção em horas): SQL latency p95 alto, Infobip 4xx, rate limit hits em massa, CPU > 80% sustained.
+- **Sev 3** (review semanal): mock CNPJ ainda em uso, cold starts SQL Serverless excessivos.
+
+Notificação via email para Action Group `ag-aguasdopara-devops-{env}`. Setup completo + queries Kusto + runbook de incidente em `docs/MONITORING.md`.
+
+Custo estimado: ~R$ 25/mês para todas as regras. Trade-off explícito vs prejuízo potencial de incidente não detectado (créditos Infobip drenados, suspensão WhatsApp).
+
 ### Health checks: liveness vs readiness separados
 
 Dois endpoints distintos pra deixar claro o que cada um significa:
