@@ -283,7 +283,7 @@ Quando um alerta dispara, seguir:
 | `mvp0-admin-auth-brute` | App Insights → filtrar `operation == "admin_auth"` AND `result == "unauthorized"` → identificar IP. Considerar rotacionar `ADMIN-PASSWORD` + adicionar IP no WAF/Front Door. |
 | `mvp0-sql-latency-high` | Azure Portal → SQL Database → Query Performance Insight → identificar query lenta. Cold start: aceitar. Contention: ver se Serverless precisa subir tier. |
 | `mvp0-infobip-4xx` | Portal Infobip → verificar status dos templates + api key. Mensagem `last_error` em App Insights tem detalhe. |
-| `mvp0-rate-limit-hits` | Avaliar: ataque (bloquear IP no WAF) ou tráfego legítimo crescendo (subir limite em `main.py` decorators). |
+| `mvp0-rate-limit-hits` | Avaliar: ataque (bloquear IP no WAF) ou tráfego legítimo crescendo (subir limite nos decorators `@limiter.limit(...)` em `app/api/{webhook,admin,dispatch}.py`). |
 | `mvp0-pii-leak` | **URGENTE**: identificar log fonte via App Insights → adicionar `mask_pii()` no código → deploy hotfix → considerar rotacionar `LOG_PII_SALT` (invalida histórico mas necessário se vazamento confirmado). |
 
 ## Custos estimados

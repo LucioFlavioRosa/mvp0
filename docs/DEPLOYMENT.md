@@ -164,6 +164,30 @@ az storage queue create \
 - Visibility timeout no retry admin: 5 min (`RECEIVE_VISIBILITY_SECONDS = 300`)
 - Politica: 1 ciclo de vida por mensagem (enqueue -> admin retry manual -> delete obrigatorio)
 
+### 2.6.1 Azure Storage Queue (sequencias de mensagens)
+
+Fila para sequencias de mensagens (`resposta_bot.tipo == "sequencia"`). O webhook enfileira; o `sequence_worker` (thread daemon dentro do mesmo processo Gunicorn) consome. Substitui o uso anterior de `BackgroundTasks` do FastAPI — necessario porque sequencias tem `delay` entre itens (ate dezenas de segundos), e segurar threads do pool anyio com `time.sleep` longo exauria o pool em picos.
+
+```bash
+az storage queue create \
+  --name outbound-sequences \
+  --account-name $STORAGE \
+  --account-key $ACCOUNT_KEY
+```
+
+> Mesma storage account dos containers Blob + DLQ (mesmo secret `CONNECTION-STRING-AZURE-STORAGE`). A app cria a fila on-demand via `QueueClient.create_queue()` (idempotente), entao este comando e apenas para garantir que existe antes do primeiro envio.
+
+**Caracteristicas da fila:**
+
+- Nome fixo: `outbound-sequences` (codado em `app/integrations/sequence_queue.py`)
+- Visibility timeout no consume: 5 min — se o worker cair no meio de uma sequencia, a mensagem reaparece para outro worker
+- Poison threshold: `dequeue_count > 5` deleta a mensagem e loga CRITICAL (evita loop infinito)
+- Polling interval: 2s entre polls vazios por worker
+- Thread daemon iniciada no **lifespan startup** do FastAPI (`sequence_worker.start_worker()`); parada no lifespan shutdown (`stop_worker(timeout=2.0)`)
+- Com 4 workers Gunicorn por instancia App Service, ha 4 threads consumindo em paralelo. Storage Queue serializa via visibility timeout, nao ha risco de duplicar processamento da mesma mensagem.
+
+**Trade-off conhecido:** se uma sequencia falha no meio do envio (ex: timeout em uma das mensagens), ao reaparecer apos visibility expirar o worker re-envia todos os N itens. Usuario recebe os primeiros 1-2 duplicados. Aceitavel a 100 conversas/dia (< 0.1% das sequencias estimadas).
+
 ### 2.7 Azure Cache for Redis (rate limit)
 
 ```bash
