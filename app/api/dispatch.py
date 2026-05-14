@@ -6,9 +6,13 @@ no backoffice (MSAL.js), backoffice envia token delegado nesta chamada.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Request
 
-from app.api.deps import DispatchRequest, verify_dispatch_auth
+from app.api.deps import (
+    DispatchRequest,
+    get_dispatch_service,
+    verify_dispatch_auth,
+)
 from app.core.rate_limit import limiter
 from app.core.telemetry import get_logger, mask_pii
 from app.core import log_dimensions as ld
@@ -20,14 +24,17 @@ router = APIRouter(prefix="/api")
 
 @router.post("/dispatch")
 @limiter.limit("10/minute")
-async def dispatch_order(request: Request, data: DispatchRequest, user=Depends(verify_dispatch_auth)):
+async def dispatch_order(
+    request: Request,
+    data: DispatchRequest,
+    user=Depends(verify_dispatch_auth),
+    dispatch_service=Depends(get_dispatch_service),
+):
     """Dispara oferta de servico a uma lista de parceiros via WhatsApp.
 
     Body: {pedido_uuid: str, parceiros: list[str]}. Operador identificado
     pelas claims oid + preferred_username do JWT (mascaradas no log).
-
-    Fail-safe: se DispatchService nao inicializou no startup, retorna 503
-    em vez de AttributeError silenciado.
+    get_dispatch_service levanta 503 se DispatchService nao inicializou.
     """
     operator_oid = user.claims.get("oid", "unknown") if user else "unknown"
     operator_email = user.claims.get("preferred_username") or user.claims.get("email", "unknown")
@@ -39,21 +46,6 @@ async def dispatch_order(request: Request, data: DispatchRequest, user=Depends(v
         "operator_oid": operator_oid,
         ld.SENDER_HASH: mask_pii(operator_email),
     }})
-
-    dispatch_service = getattr(request.app.state, "dispatch_service", None)
-    if dispatch_service is None:
-        logger.critical(
-            "dispatch recebido mas DispatchService offline",
-            extra={"custom_dimensions": {
-                ld.OPERATION: "dispatch",
-                ld.PEDIDO_ID: data.pedido_uuid,
-                "operator_oid": operator_oid,
-            }},
-        )
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="dispatch service offline",
-        )
 
     try:
         result = dispatch_service.enviar_oferta_para_prestadores(data.parceiros, data.pedido_uuid)

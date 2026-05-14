@@ -233,3 +233,95 @@ def _get_blob_service(request: Request):
         from app.services.azure_blob_service import AzureBlobService
         state.blob_service = AzureBlobService()
     return state.blob_service
+
+
+# ---------------------------------------------------------------------------
+# State accessors (Depends-friendly): extraem singletons do app.state.
+#
+# Vantagens vs `request.app.state.X` direto no handler:
+# - Validacao "esta inicializado?" centralizada em UM lugar (DRY).
+# - Routers ficam testaveis via mocker.dependency_overrides[get_X] = mock,
+#   sem precisar tocar em app.state durante o teste.
+# - Assinatura da rota declara dependencias explicitamente.
+#
+# Cada getter levanta HTTPException 503 se a dependencia for None (startup
+# falhou). Sequence_queue eh excecao: enqueue eh fail-safe, retorna None.
+# ---------------------------------------------------------------------------
+def get_settings(request: Request):
+    """Retorna o Settings (Key Vault wrapper). Sempre populado no startup."""
+    return request.app.state.settings
+
+
+def get_bot(request: Request):
+    """Retorna o BotEngine ou 503 se nao inicializou."""
+    bot = getattr(request.app.state, "bot", None)
+    if bot is None:
+        logger.critical(
+            "BotEngine offline (falhou no startup)",
+            extra={"custom_dimensions": {ld.OPERATION: "get_bot"}},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="bot offline",
+        )
+    return bot
+
+
+def get_dispatch_service(request: Request):
+    """Retorna o DispatchService ou 503 se nao inicializou."""
+    svc = getattr(request.app.state, "dispatch_service", None)
+    if svc is None:
+        logger.critical(
+            "DispatchService offline (falhou no startup)",
+            extra={"custom_dimensions": {ld.OPERATION: "get_dispatch_service"}},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="dispatch service offline",
+        )
+    return svc
+
+
+def get_infobip_client(request: Request):
+    """Retorna o InfobipClient ou 503 se nao inicializou."""
+    client = getattr(request.app.state, "infobip_client", None)
+    if client is None:
+        logger.critical(
+            "InfobipClient offline (credenciais ausentes ou erro no startup)",
+            extra={"custom_dimensions": {ld.OPERATION: "get_infobip_client"}},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="infobip client offline",
+        )
+    return client
+
+
+def get_dlq(request: Request):
+    """Retorna o DLQClient ou 503 se nao inicializou."""
+    dlq = getattr(request.app.state, "dlq", None)
+    if dlq is None:
+        logger.critical(
+            "DLQClient offline (Storage Queue indisponivel no startup)",
+            extra={"custom_dimensions": {ld.OPERATION: "get_dlq"}},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="dlq client offline",
+        )
+    return dlq
+
+
+def get_sequence_queue(request: Request):
+    """Retorna o SequenceQueueClient ou None.
+
+    Diferente dos outros getters, NAO levanta 503 se ausente - enqueue
+    eh fire-and-forget e o handler ja checa `if sequence_queue is not None`.
+    Permite o webhook continuar funcionando mesmo sem queue (rara: storage
+    indisponivel durante startup mas voltou depois).
+    """
+    return getattr(request.app.state, "sequence_queue", None)
+
+
+def get_sender_number(request: Request) -> str:
+    return getattr(request.app.state, "sender_number", "")
